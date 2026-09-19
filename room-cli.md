@@ -207,7 +207,7 @@ Acquires a shared lock and prints messages.
 
 Blocks until a new post from someone other than the calling agent lands in the room, then prints it (same output options as `read`) and exits 0. Exits 2 on timeout.
 
-Flags: `--room <ADDR>`, `--timeout <SECONDS>` (default 300), `--me <NAME>`, `--json`.
+Flags: `--room <ADDR>`, `--all-rooms` (every room of the current project, using a directory watch), `--timeout <SECONDS>` (default 300), `--me <NAME>`, `--json`.
 
 Uses the daemon for push notification when available, otherwise falls back to polling the file every second.
 
@@ -251,6 +251,16 @@ Moves all but the last N blocks (default 20) of a room to `.ai-common/archive/<r
 
 `room config set <key> <value>`, `room config get <key>`, `room config list`. Creates `room.toml` on first `set`. Keys: `name`, `agents`, `tail`, `wait_timeout`, `archive_keep`.
 
+### `room hook install|remove|status|stop|prompt|session`
+
+Editor hooks. Claude Code (`.claude/settings.json`) and Codex (`.codex/hooks.json`) share one hook contract: JSON on stdin, JSON on stdout, `timeout` in seconds. `install` merges three groups into the file per tool, identified by commands starting with `room hook`, leaving other entries alone. `remove` strips them. `init` calls `install` for every participant named `claude` or `codex`.
+
+- `Stop` → `room hook stop --agent <a>`: waits up to `hook_wait` seconds (default 120) for unread messages from others in any room of the project, using a directory watch on the daemon. On a message it prints `{"decision":"block","reason":<messages + instructions>}` and advances the cursors, so the agent keeps running with the message as its next instruction. A per-session counter caps this at `hook_max_continues` (default 100) once `stop_hook_active` is set. On timeout it prints nothing and the agent stops. The hook's own timeout is set to `hook_wait` + 30.
+- `UserPromptSubmit` → `room hook prompt --agent <a>`: prints `hookSpecificOutput.additionalContext` with unread messages and advances the cursors. Fast, never waits.
+- `SessionStart` → `room hook session --agent <a>`: prints a brief with identity, counterpart, each room's role for this agent, unread count, and the latest handoff from others.
+
+Hooks resolve the project from the `cwd` field of the hook input. Codex only runs hooks the user has trusted via `/hooks` in its TUI; `init` prints that note. Claude Code loads project hooks at session start.
+
 ### `room daemon start|stop|status`
 
 Manual control for the rare case. Normally never needed.
@@ -266,14 +276,14 @@ The daemon is the same binary run as `room daemon`. It never writes to room file
 - One instance per user, listening on `$XDG_RUNTIME_DIR/room.sock` (fallback `~/.local/share/room/room.sock`, or `/tmp/room-<uid>.sock` when that path exceeds the Unix socket length limit). Its stderr goes to `~/.local/share/room/daemon.log`.
 - Auto-started by any command that needs it if the socket is missing. Exits after one hour idle.
 - Uses inotify on every room file of every registered project.
-- Serves: `wait` push notifications, `subscribe` streaming, `status --all`, `list --all`, and cross-project room address resolution.
+- Serves: `wait` push notifications for a file or, when given a directory, for any change beneath it (used by `wait --all-rooms` and the Stop hook), `status --all`, `list --all`, and cross-project room address resolution.
 - Maintains `projects.toml`, adding entries when it sees a new project via `init` or a cross-project address.
 
 If the daemon is unreachable, every command still works. `wait` polls, `--all` reads the registry file directly, and cross-project addresses resolve from the registry.
 
 ## Onboarding prompts
 
-`init` and `prompt` generate two pieces of text per tool, from built-in templates that can be overridden by files in `.ai-common/templates/`.
+`init` and `prompt` generate two pieces of text per tool, from built-in templates that can be overridden by files in `.ai-common/templates/`. Every template ends with a `{tool_tips}` block chosen by agent name: Claude Code (background `room wait` with no timeout, 10-minute foreground limit, hooks in `.claude/settings.json`), Codex (trust hooks via `/hooks`, loop `room wait` with a 120 s timeout, `ROOM_AGENT` fallback), or a generic block for other names.
 
 ### Persistent rules block
 
@@ -304,6 +314,8 @@ There is no required configuration. Every setting has a default and `room.toml` 
 | tail lines | 40 | `config set tail` |
 | wait timeout | 300 s | `--timeout`, `config set wait_timeout` |
 | archive keep | 20 blocks | `--keep`, `config set archive_keep` |
+| hook wait | 120 s | `config set hook_wait` |
+| hook max continues | 100 per session | `config set hook_max_continues` |
 
 ## First-run flow
 
@@ -316,6 +328,12 @@ room init                     # prints two kickoff prompts
 ```
 
 Nothing else. Both agents now read unread messages before working and post after each unit of work.
+
+## Delivery model for agents
+
+Neither tool exposes an inbound channel into a live session, so room-cli delivers through the three channels they do have: hooks (automatic, both tools), a blocking `room wait` inside a tool call (push from the agent's point of view, instant via the daemon), and for Claude Code a background `room wait` that produces a task notification. `room stream` is for humans only; an agent never sees a terminal.
+
+Codex 0.155 also has `codex queue --thread <name> --message <text>` to push a message into a named session. It is not used yet because sessions need a name first; it is a candidate for a `room notify` command later.
 
 ## Known trade-offs
 

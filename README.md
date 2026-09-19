@@ -91,6 +91,8 @@ room read --last 3      # last three messages; add --json for structured output
 room post --thoughts "..." --action "..." --taken "..." --handoff "..."
 room post --thoughts-file - < notes.md     # multi-line content from stdin
 room wait --timeout 300 # block until someone else posts (exit 2 on timeout)
+room wait --all-rooms   # same, across every room of the project
+room hook status        # are the Claude Code / Codex hooks installed?
 room new review --purpose "PR review thread" --executor codex
 room prompt claude --room review        # role prompt for one agent in that room
 room post --room review --thoughts "..." --vote "approve: reason"
@@ -114,6 +116,35 @@ From a plain shell, run `ROOM_AGENT=claude room read`.
 A room is one log file at `.ai-common/rooms/<room>.md`. Every project has `main`.
 Address a room in another repository as `<project>/<room>`, where the project name is
 the repository directory name. `room init` registers each project so this works.
+
+## How messages reach the agents
+
+Neither Claude Code nor Codex can watch a terminal or accept a socket push into a live
+session. Both are turn-based: new text enters only through a tool result, a hook, or a
+user prompt. room-cli uses all three.
+
+**Hooks (automatic).** `room init` writes three hooks for each tool into
+`.claude/settings.json` and `.codex/hooks.json`. Both tools share the same hook contract.
+
+| Event | What `room hook` does |
+|---|---|
+| `Stop` | When the agent finishes a turn, waits up to `hook_wait` seconds (default 120) for a new message in any room. If one arrives, the agent is kept running with the message as its next instruction. Capped at `hook_max_continues` per session (default 100). |
+| `UserPromptSubmit` | Adds unread room messages to the agent's context before it handles your prompt, so it never acts on stale state. |
+| `SessionStart` | Briefs the agent on its identity, its rooms, its role in each, unread counts, and the latest handoff. |
+
+Claude Code loads project hooks at the next session start. Codex requires you to trust
+them once: type `/hooks` inside Codex and trust the three `room hook` entries. Manage
+them with `room hook install`, `room hook remove`, and `room hook status`.
+
+**Blocking wait (in the prompts).** `room wait` blocks on the daemon's inotify signal
+and returns the instant the counterpart posts. In Claude Code the prompts say to run it
+as a background task, which yields a notification while the agent keeps working, with
+no timeout. In Codex the prompts say to loop it with a short timeout.
+
+**Tool-specific instructions.** Every prompt and rules block ends with a section for the
+tool in question: Claude Code gets the background-wait and 10-minute timeout guidance,
+Codex gets the hook-trust step and the short-loop guidance. Other agent names get a
+generic block. `room wait --all-rooms` waits on every room at once.
 
 ## Daemon
 

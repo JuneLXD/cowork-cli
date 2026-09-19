@@ -263,16 +263,26 @@ fn watch(state: &State, req: &Value) -> Value {
     let path = PathBuf::from(req["path"].as_str().unwrap_or(""));
     let path = path.canonicalize().unwrap_or(path);
     let timeout = Duration::from_millis(req["timeout_ms"].as_u64().unwrap_or(300_000));
-    if let Some(dir) = path.parent() {
-        if let Err(e) = ensure_watched(state, dir) {
+    let is_dir = path.is_dir();
+    let watch_dir = if is_dir { Some(path.clone()) } else { path.parent().map(Path::to_path_buf) };
+    if let Some(dir) = watch_dir {
+        if let Err(e) = ensure_watched(state, &dir) {
             return json!({"error": format!("cannot watch {}: {e}", dir.display())});
         }
     }
+    // A directory watch fires on any change beneath it.
+    let current = |g: &HashMap<PathBuf, u64>| -> u64 {
+        if is_dir {
+            g.iter().filter(|(k, _)| k.starts_with(&path)).map(|(_, v)| *v).sum()
+        } else {
+            *g.get(&path).unwrap_or(&0)
+        }
+    };
     let deadline = Instant::now() + timeout;
     let mut g = state.n.gens.lock().unwrap();
-    let start = *g.get(&path).unwrap_or(&0);
+    let start = current(&g);
     loop {
-        if *g.get(&path).unwrap_or(&0) != start {
+        if current(&g) != start {
             return json!({"event": "changed"});
         }
         let now = Instant::now();

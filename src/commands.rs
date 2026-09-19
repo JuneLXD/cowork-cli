@@ -103,6 +103,15 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
     gitignore_add(&root, ".ai-common/.cursors/")?;
     registry::register(&project.name, &root)?;
 
+    // Editor hooks so both tools receive room messages without polling.
+    let mut hooked: Vec<String> = Vec::new();
+    for a in &participants {
+        if a == "claude" || a == "codex" {
+            crate::hooks::install_for(&root, a, a)?;
+            hooked.push(a.clone());
+        }
+    }
+
     // Onboarding prompts.
     let mut onboarding = format!(
         "# room-cli onboarding for `{}`\n\nPaste the matching prompt into each tool's session. Regenerate any time with `room prompt <agent>`.\n\n",
@@ -125,6 +134,14 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
         println!("  created: {}", created.join(", "));
     }
     println!("  rules blocks: {}", updated.join(", "));
+    if !hooked.is_empty() {
+        let files: Vec<String> = hooked
+            .iter()
+            .map(|t| crate::hooks::hook_file(&root, t).strip_prefix(&root).map(|p| p.display().to_string()).unwrap_or_default())
+            .collect();
+        println!("  hooks: {}", files.join(", "));
+        crate::hooks::print_trust_notes(&hooked);
+    }
     println!("  prompts saved to .ai-common/ONBOARDING.md");
     if !quiet {
         println!();
@@ -269,48 +286,66 @@ pub fn read(a: ReadArgs) -> Result<()> {
 // ---------- wait ----------
 
 pub fn wait(a: WaitArgs) -> Result<i32> {
-    let rr = paths::resolve_room(a.room.as_deref())?;
-    paths::ensure_room_exists(&rr)?;
-    let cfg = config::load(&rr.project.root);
+    let cfg;
+    let (project, rooms, watch_path, label): (Project, Vec<String>, std::path::PathBuf, String) = if a.all_rooms {
+        let project = paths::current_project()?;
+        paths::ensure_initialized(&project)?;
+        cfg = config::load(&project.root);
+        let rooms = room_names(&project.root)?;
+        let watch = paths::rooms_dir(&project.root);
+        let label = format!("{}/*", project.name);
+        (project, rooms, watch, label)
+    } else {
+        let rr = paths::resolve_room(a.room.as_deref())?;
+        paths::ensure_room_exists(&rr)?;
+        cfg = config::load(&rr.project.root);
+        let label = rr.addr();
+        (rr.project.clone(), vec![rr.room.clone()], rr.path.clone(), label)
+    };
     let me = agent::detect(a.me.as_deref())?;
-    let root = rr.project.root.clone();
+    let root = project.root.clone();
     let timeout = a.timeout.or(cfg.wait_timeout).unwrap_or(300);
 
-    if cursor::load(&root, &me, &rr.room).is_none() {
-        let rf = room::parse(&room::read_locked(&rr.path)?);
-        let h = rf.messages.last().map(|m| m.header()).unwrap_or_default();
-        cursor::save(&root, &me, &rr.room, &h)?;
+    // No cursor yet: start listening from now.
+    for r in &rooms {
+        if cursor::load(&root, &me, r).is_none() {
+            let rf = room::parse(&room::read_locked(&paths::room_path(&root, r))?);
+            let h = rf.messages.last().map(|m| m.header()).unwrap_or_default();
+            cursor::save(&root, &me, r, &h)?;
+        }
     }
 
     let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut use_daemon = true;
     loop {
-        let rf = room::parse(&room::read_locked(&rr.path)?);
-        let cur = cursor::load(&root, &me, &rr.room);
-        let idx = cursor::unread_index(&rf.messages, cur.as_deref()).unwrap_or(rf.messages.len());
-        let fresh: Vec<Message> = rf.messages[idx..]
-            .iter()
-            .filter(|m| m.agent != me)
-            .cloned()
-            .collect();
-        if !fresh.is_empty() {
-            print_messages(&fresh, a.json, "")?;
-            if let Some(last) = rf.messages.last() {
-                cursor::save(&root, &me, &rr.room, &last.header())?;
+        let mut found = false;
+        for r in &rooms {
+            let rf = room::parse(&room::read_locked(&paths::room_path(&root, r))?);
+            let cur = cursor::load(&root, &me, r);
+            let idx = cursor::unread_index(&rf.messages, cur.as_deref()).unwrap_or(rf.messages.len());
+            let fresh: Vec<Message> = rf.messages[idx..].iter().filter(|m| m.agent != me).cloned().collect();
+            if !fresh.is_empty() {
+                if a.all_rooms && !a.json {
+                    println!("## {}/{r}", project.name);
+                }
+                print_messages(&fresh, a.json, "")?;
+                if let Some(last) = rf.messages.last() {
+                    cursor::save(&root, &me, r, &last.header())?;
+                }
+                found = true;
             }
+        }
+        if found {
             return Ok(0);
         }
         let now = Instant::now();
         if now >= deadline {
-            eprintln!(
-                "timeout: no new post from others in {} within {timeout}s",
-                rr.addr()
-            );
+            eprintln!("timeout: no new post from others in {label} within {timeout}s");
             return Ok(2);
         }
         let remaining = deadline - now;
         if use_daemon {
-            match daemon::watch_change(&rr.path, remaining.min(Duration::from_secs(60))) {
+            match daemon::watch_change(&watch_path, remaining.min(Duration::from_secs(60))) {
                 Ok(_) => continue,
                 Err(_) => use_daemon = false,
             }
@@ -919,6 +954,14 @@ pub fn doctor() -> Result<()> {
                     let f = p.root.join(templates::rules_file(&a));
                     let has = fs::read_to_string(&f).map(|s| s.contains(templates::START)).unwrap_or(false);
                     line(has, false, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("rules block for {a} missing from {}; run `room init`", templates::rules_file(&a)) });
+                }
+                for t in ["claude", "codex"] {
+                    if agent::participants(&cfg).iter().any(|a| a == t) {
+                        let has = crate::hooks::installed(&p.root, t);
+                        let f = crate::hooks::hook_file(&p.root, t);
+                        let f = f.strip_prefix(&p.root).map(|x| x.display().to_string()).unwrap_or_default();
+                        line(has, false, if has { format!("room hooks for {t} installed in {f}") } else { format!("room hooks for {t} missing from {f}; run `room hook install`") });
+                    }
                 }
                 let reg = registry::lookup(&p.name).is_some();
                 line(reg, false, if reg { "project registered for cross-project addressing".into() } else { "project not in registry; run `room init` again".into() });

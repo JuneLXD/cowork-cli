@@ -16,9 +16,15 @@ pub struct Config {
     pub wait_timeout: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_keep: Option<usize>,
+    /// Seconds a Stop hook waits for new messages before letting the agent stop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook_wait: Option<u64>,
+    /// Max consecutive continues a Stop hook may force in one session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook_max_continues: Option<u64>,
 }
 
-pub const KEYS: &[&str] = &["name", "agents", "tail", "wait_timeout", "archive_keep"];
+pub const KEYS: &[&str] = &["name", "agents", "tail", "wait_timeout", "archive_keep", "hook_wait", "hook_max_continues"];
 
 pub fn load(root: &Path) -> Config {
     fs::read_to_string(paths::config_path(root))
@@ -47,6 +53,10 @@ pub fn set(root: &Path, key: &str, value: &str) -> Result<()> {
         "archive_keep" => {
             cfg.archive_keep = Some(value.parse().context("archive_keep must be a number")?)
         }
+        "hook_wait" => cfg.hook_wait = Some(value.parse().context("hook_wait must be seconds")?),
+        "hook_max_continues" => {
+            cfg.hook_max_continues = Some(value.parse().context("hook_max_continues must be a number")?)
+        }
         _ => bail!("unknown key `{key}`; valid keys: {}", KEYS.join(", ")),
     }
     save(root, &cfg)
@@ -60,6 +70,8 @@ pub fn get(root: &Path, key: &str) -> Result<Option<String>> {
         "tail" => cfg.tail.map(|v| v.to_string()),
         "wait_timeout" => cfg.wait_timeout.map(|v| v.to_string()),
         "archive_keep" => cfg.archive_keep.map(|v| v.to_string()),
+        "hook_wait" => cfg.hook_wait.map(|v| v.to_string()),
+        "hook_max_continues" => cfg.hook_max_continues.map(|v| v.to_string()),
         _ => bail!("unknown key `{key}`; valid keys: {}", KEYS.join(", ")),
     })
 }

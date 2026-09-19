@@ -22,10 +22,12 @@ This project uses the `room` CLI to coordinate agents through a shared, locked l
 - For multi-line content, pipe it: `room post --thoughts-file - <<'EOF' ... EOF`.
 - If `room doctor` reports your identity as unknown, prefix commands with `ROOM_AGENT={agent}`.
 - The full protocol is in `.ai-common/PROTOCOL.md`.
+
+{tool_tips}
 <!-- room-cli:end -->
 "#;
 
-const KICKOFF: &str = "You are `{agent}` in room `{project}/main`, coordinating with `{other}` through the `room` CLI. Run `room read` now, then reply to any handoff addressed to you before starting new work. Follow the room-cli rules in `{rules_file}`. If `room` reports your identity as unknown, run commands as `ROOM_AGENT={agent} room ...`.";
+const KICKOFF: &str = "You are `{agent}` in room `{project}/main`, coordinating with `{other}` through the `room` CLI. Run `room read` now, then reply to any handoff addressed to you before starting new work. Follow the room-cli rules in `{rules_file}`. If `room` reports your identity as unknown, run commands as `ROOM_AGENT={agent} room ...`.\n\n{tool_tips}";
 
 const ADVISOR: &str = r#"You are `{agent}`, the ADVISOR in room `{project}/{room}`, working with `{other}` (the executor). You read, suggest, and vote. You never change files in this repository; `{other}` makes every change. Your job is to catch mistakes early, propose better options, and keep `{other}` unblocked.
 
@@ -43,6 +45,8 @@ Commands
 - `room wait --room {room} --timeout 600` blocks until someone else posts. Exit code 2 means timeout: read again and continue.
 - `room post --room {room} --thoughts "..." --action "..." --taken "..." --handoff "..." --vote "approve: ..."`. Only --thoughts is required. For multi-line text use `--thoughts-file -` and pipe it on stdin.
 - `room status --room {room}` shows open handoffs and last posts.
+
+{tool_tips}
 Project-wide rules are in `{rules_file}`."#;
 
 const EXECUTOR: &str = r#"You are `{agent}`, the EXECUTOR in room `{project}/{room}`, working with `{other}` (the advisor). You read, suggest, vote, and make the changes. You are the only one who edits files in this repository.
@@ -62,6 +66,8 @@ Commands
 - `room wait --room {room} --timeout 600` blocks until someone else posts. Exit code 2 means timeout: read again and continue.
 - `room post --room {room} --thoughts "..." --action "..." --taken "..." --handoff "..." --vote "approve: ..."`. Only --thoughts is required. For multi-line text use `--thoughts-file -` and pipe it on stdin.
 - `room status --room {room}` shows open handoffs and last posts.
+
+{tool_tips}
 Project-wide rules are in `{rules_file}`."#;
 
 const PROTOCOL: &str = r#"# Room protocol
@@ -113,6 +119,31 @@ log before working and posts after each unit of work. Nobody edits the log by ha
 | `room doctor` | check the setup |
 "#;
 
+const TIPS_CLAUDE: &str = r#"Claude Code specifics
+- Hooks are installed in `.claude/settings.json`: when you finish a turn, `room hook stop` waits briefly and hands you any new message as your next instruction, and before each user prompt unread messages are added to your context. You do not need to poll.
+- To keep working while you wait for `{other}`, run `room wait --room {room} --timeout 600` with `run_in_background: true`; you get a task notification the moment `{other}` posts, and background commands have no timeout.
+- Foreground commands time out after 10 minutes, so never use a `--timeout` above 600 in the foreground.
+- For multi-line posts use a heredoc: `room post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
+
+const TIPS_CODEX: &str = r#"Codex specifics
+- Hooks are installed in `.codex/hooks.json`. Once the user trusts them (they type /hooks in Codex), `room hook stop` hands you new messages as your next instruction when you finish a turn, and unread messages are added before each user prompt. Until they are trusted, you must loop with `room wait` yourself.
+- Run `room wait --room {room} --timeout 120` in a loop rather than one long wait, so a shell timeout never kills it; exit code 2 just means "nothing yet", read and wait again.
+- If `room` says it cannot tell who you are, prefix every command with `ROOM_AGENT={agent}`.
+- For multi-line posts use a heredoc: `room post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
+
+const TIPS_GENERIC: &str = r#"Tool specifics
+- Loop with `room wait --room {room} --timeout 120`; exit code 2 means nothing arrived yet, so read and wait again.
+- If `room` says it cannot tell who you are, prefix every command with `ROOM_AGENT={agent}`.
+- For multi-line posts use `room post --room {room} --thoughts-file -` and pipe the text on stdin."#;
+
+pub fn tool_tips(agent: &str) -> &'static str {
+    match agent.to_ascii_lowercase().as_str() {
+        "claude" => TIPS_CLAUDE,
+        "codex" => TIPS_CODEX,
+        _ => TIPS_GENERIC,
+    }
+}
+
 pub fn rules_file(agent: &str) -> &'static str {
     if agent.eq_ignore_ascii_case("claude") {
         "CLAUDE.md"
@@ -122,17 +153,20 @@ pub fn rules_file(agent: &str) -> &'static str {
 }
 
 fn fill(tpl: &str, agent: &str, other: &str, project: &str) -> String {
-    tpl.replace("{agent}", agent)
+    tpl.replace("{tool_tips}", tool_tips(agent))
+        .replace("{agent}", agent)
         .replace("{other}", other)
         .replace("{project}", project)
         .replace("{rules_file}", rules_file(agent))
+        .replace("{room}", "main")
 }
 
 /// Role prompt for a room: `role` is "advisor" or "executor".
 pub fn role_prompt(root: &Path, role: &str, agent: &str, other: &str, project: &str, room: &str) -> String {
     let builtin = if role == "executor" { EXECUTOR } else { ADVISOR };
     let tpl = override_tpl(root, &format!("{role}.md")).unwrap_or_else(|| builtin.to_string());
-    fill(&tpl, agent, other, project).replace("{room}", room).trim_end().to_string()
+    let tpl = tpl.replace("{tool_tips}", tool_tips(agent)).replace("{room}", room);
+    fill(&tpl, agent, other, project).trim_end().to_string()
 }
 
 fn override_tpl(root: &Path, name: &str) -> Option<String> {

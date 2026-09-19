@@ -119,6 +119,46 @@ pub enum Cmd {
     },
     /// Check the installation and project setup
     Doctor,
+    /// Editor hooks: deliver room messages to Claude Code and Codex automatically
+    Hook {
+        #[command(subcommand)]
+        action: HookCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HookCmd {
+    /// Write the hook config into .claude/settings.json and/or .codex/hooks.json
+    Install {
+        /// claude, codex, or all (default: every configured participant)
+        #[arg(long, value_name = "TOOL")]
+        tool: Option<String>,
+    },
+    /// Remove the room hooks from the editor config files
+    Remove {
+        #[arg(long, value_name = "TOOL")]
+        tool: Option<String>,
+    },
+    /// Show which hook files carry room hooks
+    Status,
+    /// Stop hook: wait for new messages and hand them to the agent instead of letting it stop
+    Stop {
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
+        /// Seconds to wait for a message before allowing the stop
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// UserPromptSubmit hook: add unread messages as context
+    Prompt {
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
+    },
+    /// SessionStart hook: brief the agent on its identity, rooms, and roles
+    Session {
+        #[arg(long, value_name = "NAME")]
+        agent: Option<String>,
+    },
 }
 
 #[derive(Args)]
@@ -190,6 +230,9 @@ pub struct ReadArgs {
 pub struct WaitArgs {
     #[arg(long)]
     pub room: Option<String>,
+    /// Wait on every room of the project instead of one
+    #[arg(long)]
+    pub all_rooms: bool,
     /// Seconds to wait before giving up (exit code 2)
     #[arg(long)]
     pub timeout: Option<u64>,

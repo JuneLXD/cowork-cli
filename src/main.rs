@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod cursor;
 mod daemon;
+mod hooks;
 mod menu;
 mod paths;
 mod registry;
@@ -12,7 +13,7 @@ mod templates;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Cmd};
+use cli::{Cli, Cmd, HookCmd};
 
 fn run(cli: Cli) -> Result<i32> {
     match cli.cmd {
@@ -32,6 +33,15 @@ fn run(cli: Cli) -> Result<i32> {
         Some(Cmd::Config { action }) => commands::config_cmd(action).map(|_| 0),
         Some(Cmd::Daemon { action }) => commands::daemon_cmd(action).map(|_| 0),
         Some(Cmd::Doctor) => commands::doctor().map(|_| 0),
+        Some(Cmd::Hook { action }) => match action {
+            HookCmd::Install { tool } => hooks::install(tool.as_deref()),
+            HookCmd::Remove { tool } => hooks::remove(tool.as_deref()),
+            HookCmd::Status => hooks::status(),
+            HookCmd::Stop { agent, timeout } => hooks::stop(agent.as_deref(), timeout),
+            HookCmd::Prompt { agent } => hooks::prompt(agent.as_deref()),
+            HookCmd::Session { agent } => hooks::session(agent.as_deref()),
+        }
+        .map(|_| 0),
     }
 }
 

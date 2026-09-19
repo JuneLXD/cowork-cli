@@ -1,0 +1,26 @@
+[package]
+name = "room-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Atomic, locked message rooms for coordinating AI coding agents on one repository"
+
+[[bin]]
+name = "room"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+notify = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+inquire = "0.7"
+toml = "0.8"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

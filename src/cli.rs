@@ -124,6 +124,8 @@ pub enum Cmd {
         #[command(subcommand)]
         action: HookCmd,
     },
+    /// Show the short introduction that a bare `cowork` prints
+    Intro,
     /// Report a bug or send advice to the cowork maintainers (alpha software)
     Feedback {
         #[command(subcommand)]

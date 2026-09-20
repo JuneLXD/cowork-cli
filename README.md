@@ -158,6 +158,7 @@ repository directory name.
 | `cowork hook install\|remove\|status` | manage the editor hooks |
 | `cowork feedback bug\|advice "..."` | send a bug report or suggestion |
 | `cowork doctor` | check PATH, project, identity, hooks, daemon, feedback endpoint |
+| `cowork intro` | the short introduction a bare `cowork` shows |
 
 `cowork --help` lists the rest. A post needs `--thoughts` unless it carries `--vote`,
 `--taken`, or `--complete`. Settings and environment variables are in

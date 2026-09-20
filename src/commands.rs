@@ -1020,6 +1020,8 @@ pub fn status(room: Option<String>, all: bool, json: bool) -> Result<()> {
 }
 
 pub fn home() -> Result<()> {
+    crate::intro::print();
+    println!();
     if crate::menu::interactive() {
         return crate::menu::run();
     }

@@ -1158,3 +1158,30 @@ fn concurrent_first_failures_all_enqueue() {
     }
     assert_eq!(queue_files(&p).len(), 8, "every failed report was queued");
 }
+
+#[test]
+fn bare_cowork_starts_with_the_intro_and_intro_replays_it() {
+    let p = Project::new("intro");
+    let intro = p.ok("claude", &["intro"]);
+    assert!(intro.lines().count() >= 10 && intro.lines().all(|l| l.chars().count() <= 76), "{intro}");
+    assert!(intro.contains("cowork init") && intro.contains("cowork status"), "{intro}");
+    // Piped bare `cowork` in an initialised project: intro first, then the status block.
+    let bare = String::from_utf8_lossy(&p.run("claude", &[], None).stdout).to_string();
+    assert!(bare.starts_with(intro.trim_end()), "intro comes first:\n{bare}");
+    assert!(bare.contains("last post by") || bare.contains("no posts yet") || bare.contains("/main"), "status follows:\n{bare}");
+    // Before init, the intro still comes first, then the setup hint.
+    let fresh = std::env::temp_dir().join(format!("cowork-intro-fresh-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&fresh);
+    fs::create_dir_all(fresh.join(".git")).unwrap();
+    // An empty .ai-common pins project discovery here, so an initialised ancestor cannot capture it.
+    fs::create_dir_all(fresh.join(".ai-common")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cowork")).current_dir(&fresh).env("XDG_DATA_HOME", &fresh).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with(intro.trim_end()), "{text}");
+    assert!(text.contains("cowork is not set up here"), "the setup hint follows the banner:\n{text}");
+    let _ = fs::remove_dir_all(&fresh);
+    // Explicit subcommands and JSON stay free of the banner.
+    let status = p.ok("claude", &["status", "--json"]);
+    assert!(status.trim_start().starts_with('['), "{status}");
+    assert!(!p.ok("claude", &["read", "--last", "1"]).contains("helps coding agents"));
+}

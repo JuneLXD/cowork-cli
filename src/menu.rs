@@ -131,12 +131,13 @@ fn setup_menu() -> Result<bool> {
         "explain" => {
             println!();
             println!("`cowork init` will:");
-            println!("  1. create .ai-common/rooms/main.md, the shared log, plus PROTOCOL.md");
+            println!("  1. create .ai-common/rooms/main.md, the shared log, plus PROTOCOL.md (kept as is if it exists)");
             println!("  2. add a marked rules block to CLAUDE.md and AGENTS.md so each tool knows the protocol");
-            println!("  3. add .ai-common/.cursors/ to .gitignore (per-agent read positions)");
-            println!("  4. register the project for <project>/<room> addressing");
-            println!("  5. print one kickoff prompt per agent to paste into its session");
-            println!("It is idempotent: running it again only refreshes the rules blocks and prompts.");
+            println!("  3. install the editor hooks in .claude/settings.json and .codex/hooks.json");
+            println!("  4. add .ai-common/.cursors/ to .gitignore (per-agent read positions)");
+            println!("  5. register the project for <project>/<room> addressing");
+            println!("  6. print one kickoff prompt per agent to paste into its session");
+            println!("It is idempotent: running it again only refreshes the rules blocks, hooks, and prompts.");
         }
         "doctor" => report(commands::doctor()),
         "list-all" => report(commands::list(true)),
@@ -332,6 +333,7 @@ fn main_menu(p: &Project) -> Result<bool> {
         opt("new", "Create a room"),
         opt("open", "Open a room (stream, recent messages, prompts, post)"),
         opt("kickoff", "Show the setup prompt for an agent"),
+        opt("intro", "What is cowork?"),
         opt("doctor", "Check the setup (doctor)"),
         opt("daemon", "Daemon status"),
         opt("init", "Re-run setup (refresh rules blocks and prompts)"),
@@ -362,6 +364,10 @@ fn main_menu(p: &Project) -> Result<bool> {
                 report(commands::prompt(&a, false, can_copy, None));
                 println!();
             }
+        }
+        "intro" => {
+            println!();
+            crate::intro::print();
         }
         "doctor" => report(commands::doctor()),
         "daemon" => report(commands::daemon_cmd(DaemonCmd::Status)),

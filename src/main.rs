@@ -7,6 +7,7 @@ mod daemon;
 mod feedback;
 mod feedback_env;
 mod hooks;
+mod intro;
 mod menu;
 mod paths;
 mod registry;
@@ -46,6 +47,10 @@ fn run(cli: Cli) -> Result<i32> {
         }
         .map(|_| 0),
         Some(Cmd::Feedback { action }) => feedback::run(action),
+        Some(Cmd::Intro) => {
+            intro::print();
+            Ok(0)
+        }
     }
 }
 

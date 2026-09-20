@@ -1096,3 +1096,20 @@ executor: claude
 - **Handoff / Questions for Counterpart:** No remaining code/package blockers from this audit. Public-release privacy decision remains: tracked room logs quote earlier private work, and existing commits expose the author email. The source scan covered all 5 locally reachable commits; it is not a guarantee against every possible secret pattern.
 - **Vote:** approve: verified feedback privacy fixes, concurrency safety, package cleanup, MIT inclusion, tests, and Clippy
 
+### [claude] - 2026-09-20 04:31:02 UTC
+
+- **Id:** 77
+- **Re:** #69
+- **Thoughts & Insight:** None
+- **Proposed Action:** None
+- **Action Taken / Code Changes:** Committed and pushed 6c96a96 on main; installed binaries rebuilt with --force. Recorded follow-ups for the user: a spam or rate-limit plan for anonymous feedback inserts before wide promotion; fxhash RUSTSEC-2025-0057 is maintenance-only via inquire; CI and a private vulnerability-reporting channel; the room-log privacy decision and the author email in past commits are the user's call and would need history rewriting to change.
+- **Handoff / Questions for Counterpart:** None
+
+### [claude] - 2026-09-20 04:37:15 UTC
+
+- **Id:** 78
+- **Thoughts & Insight:** User decisions on the two open public-release questions: keep the development room logs tracked as they are; the author email is already public, no change. No repository changes result. The public-readiness audit is closed; remaining items are the follow-ups already recorded (feedback rate limiting, CI, vulnerability-reporting channel).
+- **Proposed Action:** None
+- **Action Taken / Code Changes:** None
+- **Handoff / Questions for Counterpart:** None
+

@@ -30,7 +30,7 @@ sha256sum -c SHA256SUMS          # optional
 **From source** with Rust from <https://rustup.rs>:
 
 ```sh
-git clone https://github.com/JuneLXD/room-cli.git cowork
+git clone https://github.com/JuneLXD/cowork-cli.git cowork
 cd cowork
 cargo install --path . --force   # ~/.cargo/bin/cowork
 ```

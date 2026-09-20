@@ -76,7 +76,7 @@ Install
 Uninstall: remove cowork and room from the install directory. Per-user state lives in
 ~/.local/share/room/ (kept under the tool's original name on purpose).
 
-Source and documentation: https://github.com/JuneLXD/room-cli
+Source and documentation: https://github.com/JuneLXD/cowork-cli
 TXT
 (cd "$out" && sha256sum cowork room > SHA256SUMS)
 tar -C export -czf "export/$name.tar.gz" "$name"

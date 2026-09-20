@@ -1,46 +1,43 @@
 # cowork
 
-`cowork` is a single static binary that lets two or more AI coding agents (Claude Code,
-Codex, others) talk to each other through a shared, locked Markdown log inside a
-repository. Every write takes a kernel-level `flock`, so concurrent posts never
-corrupt the file. Every read returns only what the caller has not seen yet.
+**Locked message rooms that let AI coding agents work together on one repository.**
 
-The full design is in [docs/design.md](docs/design.md); the layout of this repository is in [docs/layout.md](docs/layout.md).
+![Linux and WSL](https://img.shields.io/badge/platform-Linux%20%7C%20WSL-blue) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+
+`cowork` gives two or more coding agents (Claude Code, Codex, others) and the person running
+them a shared, append-only Markdown log inside the repository. Every write takes a file lock,
+every message has an id, plans are proposals that need a vote, and `cowork status` shows what
+is open and who is holding it up. No remote service is required: the log is a file in the
+repository, and the binary delivers new messages into each session through the editors' hooks.
+
+![Overview: two agents and a human coordinating through one locked log](docs/img/overview.svg)
 
 ## Install
 
-With Rust on the machine, from a checkout:
+Linux x86_64 or WSL. Pick one route.
+
+**Prebuilt bundle** (no Rust needed, Ubuntu 20.04 or newer). The bundle
+`cowork-<version>-x86_64-linux.tar.gz` is produced by `./scripts/export.sh` from a checkout;
+no releases are published yet. With the tarball in hand:
 
 ```sh
-./scripts/install.sh    # builds with cargo, installs ~/.local/bin/cowork (and the room alias)
-# or
-cargo install --path . --force  # installs ~/.cargo/bin/cowork and room; --force also upgrades in place
+tar xzf cowork-0.1.0-x86_64-linux.tar.gz
+cd cowork-0.1.0-x86_64-linux
+sha256sum -c SHA256SUMS          # optional
+./install.sh                     # installs into ~/.local/bin; sudo ./install.sh --system for /usr/local/bin
 ```
 
-Without Rust, copy the static binary. It has no runtime dependencies, so it runs on any
-x86_64 Linux or WSL:
+**From source** with Rust from <https://rustup.rs>:
 
 ```sh
-# on a machine with Rust, once:
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --target x86_64-unknown-linux-musl
-scp target/x86_64-unknown-linux-musl/release/cowork other-host:~/.local/bin/cowork
+git clone https://github.com/JuneLXD/room-cli.git cowork
+cd cowork
+cargo install --path . --force   # ~/.cargo/bin/cowork
 ```
 
-The static build needs a musl C toolchain on the build machine for the TLS library
-(`sudo apt install musl-tools` on Debian or Ubuntu). It is a build dependency only.
-
-Then `cowork init` in a repository on the other machine. Linux and WSL only.
-
-### Feedback endpoint
-
-`cowork feedback` needs to know where reports go. At build time, `build.rs` reads
-`COWORK_FEEDBACK_URL` and `COWORK_FEEDBACK_KEY` from the environment, or `project_ID` and
-`publishable_key` from a `.env` file next to `Cargo.toml`, and bakes them into the
-binary. Only a publishable (insert-only) key is accepted; anything else is dropped. A
-build without either source still works, and `cowork feedback` then explains how to set an
-endpoint at runtime: `cowork config set feedback_url ...` and `feedback_key ...`, or the
-two environment variables. The table schema is in `supabase/feedback.sql`.
+Check with `cowork --version`. The installer also puts a `room` alias next to `cowork` for
+setups that predate the current name (see [docs/compatibility.md](docs/compatibility.md)).
+To uninstall, delete the two binaries; per-user state is in `~/.local/share/room/`.
 
 ## Quick start
 
@@ -49,181 +46,138 @@ cd your-repo
 cowork init
 ```
 
-That creates `.ai-common/` with a `main` room, writes a rules block into `CLAUDE.md`
-and `AGENTS.md`, adds the cursor directory to `.gitignore`, and prints one kickoff
-prompt per agent. Open Claude Code in one terminal and Codex in another, paste each
-prompt, and they coordinate on their own. Nothing else to configure.
+`cowork init` creates `.ai-common/` with a `main` room, writes a rules block into `CLAUDE.md`
+and `AGENTS.md`, installs editor hooks for Claude Code and Codex, and prints one kickoff prompt
+per agent. Open Claude Code in one terminal and Codex in another, paste each prompt, and they
+coordinate on their own. Codex asks you once to trust the hooks (`/hooks` inside Codex).
+`cowork doctor` then confirms the setup; before `cowork init` it reports that no project is
+set up, which is expected.
 
-Reprint a prompt any time:
-
-```sh
-cowork prompt claude --copy     # kickoff prompt, copied to the clipboard
-cowork prompt codex --rules     # the persistent rules block
-```
-
-## Two surfaces
-
-People use the menu. Agents use the flags.
-
-**Menu.** Type `cowork` on its own in a terminal and you get a Claude Code style menu:
-arrow keys to move, Enter to select, Esc to go back. Before setup it offers to
-initialize the repository (or the directory, when there is no git). After setup it lists
-the rooms and offers, in order of how often you need them:
-
-1. Create a room. It asks for a name, a purpose, and which agent executes, then prints
-   the two role prompts and opens a picker that copies one prompt per selection. The
-   picker stays open so you can copy the second one; its last option goes back.
-2. Open a room. Stream it live, show recent messages, reprint its role prompts, post a
-   note as yourself, read unread as an agent, or delete the room after a confirmation.
-3. Show the setup prompt for an agent, run doctor, check the daemon, re-run setup.
-
-When output is piped, bare `cowork` prints the plain cowork list instead, so agents and
-scripts never hang on a prompt.
-
-**Flags.** Every action is also a subcommand with flags, which is what the prompts tell
-the agents to use.
-
-## Rooms and roles
-
-Every room has one executor and one or more advisors. The executor proposes each change,
-waits for a vote, and is the only one who edits files. Advisors read, suggest, and vote.
-`cowork new <name> --executor codex` creates the room and prints one prompt per agent.
-Each prompt is self-contained: role, working loop, and the exact commands to use, so an
-agent can work from the prompt alone. Prompts are saved under `.ai-common/prompts/` and
-reprinted with `cowork prompt <agent> --room <name>`.
-
-Every message has a per-room id. The executor posts a plan with `--propose`; the advisor
-decides it with `--re <id> --vote "approve: reason"` or `"reject: reason"`; the executor
-closes it with `--complete --re <id>`. Only a vote from another participant on the
-proposal id counts, and only the latest vote per voter; everything else is shown as
-informational. `cowork status` lists every open proposal with who still has to vote, and
-`cowork archive` never moves an open proposal thread. A post needs `--thoughts` unless it
-carries `--vote`, `--taken`, or `--complete`. Readers see only fields with content; the
-log keeps every field.
-
-## Everyday commands
+For a task with a clear owner, create a room with roles. The executor is the only agent that
+edits files; the advisor reviews and votes:
 
 ```sh
-room                    # status of every room in this project
-cowork read               # unread messages for the calling agent
-cowork read --last 3      # last three messages; add --json for structured output
-cowork read --brief       # one line per message: id, agent, age, marker, first words
-cowork post --thoughts "..." --action "..." --taken "..." --handoff "..."
-cowork post --propose --thoughts "why" --action "what"     # a plan that needs a vote; prints its id
-cowork post --re 12 --vote "approve: reason"               # the decision on proposal #12
-cowork post --re 12 --taken "..." --complete               # close #12 when the work is done
-cowork post --thoughts-file - < notes.md     # multi-line content from stdin
-cowork wait --timeout 300 # block until someone else posts (exit 2 on timeout)
-cowork wait --all-rooms   # same, across every room of the project
-cowork hook status        # are the Claude Code / Codex hooks installed?
-cowork new review --purpose "PR review thread" --executor codex
-cowork prompt claude --room review        # role prompt for one agent in that room
-cowork post --room review --thoughts "..." --vote "approve: reason"
-cowork stream --room review               # follow live, ctrl-c stops
-cowork delete review --yes                # remove a room, its cursors, and its prompts
-cowork list               # rooms in this project; --all for every project
-cowork status --json
-cowork archive --keep 20  # move older messages to .ai-common/archive/
-cowork lock plan.md -- sh -c 'echo step >> plan.md'   # any command under an exclusive lock
-cowork doctor             # check PATH, project, agent identity, daemon, clipboard
-cowork feedback bug "..."         # report a bug to the maintainers (alpha software)
-cowork feedback advice "..."      # send a suggestion; --file -, --context, --project are optional
-cowork feedback retry             # resend reports that were queued while offline
+cowork new landing --purpose "Fix the responsive nav" --executor claude
 ```
 
-## Feedback (alpha)
+A complete round in that room, from a plain shell with explicit identities (agents get theirs
+from their own environment and omit `COWORK_AGENT=`):
 
-cowork is alpha software, and every prompt tells the agents so. Anyone, human or
-agent, can send a bug report or a suggestion:
+```console
+$ COWORK_AGENT=claude cowork post --room landing --propose --thoughts "The nav wraps under 400 px" --action "Add a media query in src/style.css"
+posted #1 to demo/landing as claude at 2026-09-20 10:00:00 UTC (proposal; codex votes with: cowork post --room landing --re 1 --vote "approve: reason" [--thoughts "..."])
 
-```sh
-cowork feedback bug "wait returned exit 2 although codex had posted"
-cowork feedback advice --file - <<'EOF'
-status should list pending proposals
-EOF
+$ COWORK_AGENT=codex cowork read --room landing
+### [claude] - 2026-09-20 10:00:00 UTC
+
+- **Id:** 1
+- **Proposal:** yes
+- **Thoughts & Insight:** The nav wraps under 400 px
+- **Proposed Action:** Add a media query in src/style.css
+
+$ COWORK_AGENT=codex cowork post --room landing --re 1 --vote "approve: matches the bug report; keep the breakpoint in one variable"
+posted #2 to demo/landing as codex at 2026-09-20 10:00:00 UTC (approve on #1)
+
+$ COWORK_AGENT=claude cowork read --room landing
+### [codex] - 2026-09-20 10:00:00 UTC
+
+- **Id:** 2
+- **Re:** #1
+- **Vote:** approve: matches the bug report; keep the breakpoint in one variable
+
+$ COWORK_AGENT=claude cowork post --room landing --re 1 --complete --taken "src/style.css: media query at 400 px, breakpoint in --nav-break"
+posted #3 to demo/landing as claude at 2026-09-20 10:00:00 UTC (completes #1)
+
+$ cowork status --room landing
+demo/landing  (3 messages)  executor: claude  policy: approved by one, blocked by any reject
+  no open proposals
+  recent: #1 completed by #3
 ```
 
-A report is sent only when the command runs; no other command touches the network. The
-default payload is the kind, the text, the CLI version, a coarse OS name (linux or wsl),
-and who reported (claude, codex, or human). `--project` adds the project name, `--room`
-adds a room name, `--context` attaches text you choose. `--dry-run` prints the payload
-instead of sending it. Reports go to an insert-only table; the key in the binary cannot
-read them back. If sending fails, the report is queued under the data directory and
-`cowork feedback retry` resends it later. `cowork feedback list` and `cowork feedback status`
-show the queue and the endpoint.
+A rejection is answered with a revision, `cowork post --propose --re 1 ...`, which is a new
+proposal that supersedes the old one. Posting while another agent's message is still unread
+is allowed, but the poster is told so, with the ids, before acting on a stale picture.
 
-## How the agent is identified
+## Why
 
-In order: `--agent` (post) or `--me` (read, wait), then `COWORK_AGENT`, then environment
-markers set by the tool itself (`CLAUDECODE` for Claude Code, `CODEX_*` for Codex).
-From a plain shell, run `COWORK_AGENT=claude cowork read`.
+Coding agents are turn based. Nothing can push text into a running session; new input arrives
+only through a hook, a tool result, or a prompt. Two agents appending to a file without a lock
+can collide, two agents polling a chat log burn tokens re-reading it, and after fifty messages
+nobody, human or agent, can say what is still waiting for a decision.
 
-## Rooms and addressing
+- **A locked log.** One Markdown file per room under `.ai-common/rooms/`, appended under
+  `flock`, readable in any editor, committable with the code.
+- **Ids and cursors.** Every message gets a per-room id when it is written. Each agent has its
+  own read cursor, so `cowork read` returns only what that agent has not seen.
+- **Proposals and votes.** A plan is posted with `--propose`. A vote counts only when it names
+  the proposal with `--re`, comes from another participant, and is that voter's latest.
+- **Delivery.** Editor hooks hand unread messages to an agent when its turn ends and before
+  its next prompt, and brief it when a session starts. `cowork wait` blocks until someone
+  else posts.
 
-A room is one log file at `.ai-common/rooms/<room>.md`. Every project has `main`.
-Address a room in another repository as `<project>/<room>`, where the project name is
-the repository directory name. `cowork init` registers each project so this works.
+## How it works
 
-## How messages reach the agents
+![Life of a proposal: pending, approved, rejected, abstained, superseded, completed](docs/img/loop.svg)
 
-Neither Claude Code nor Codex can watch a terminal or accept a socket push into a live
-session. Both are turn-based: new text enters only through a tool result, a hook, or a
-user prompt. cowork uses all three.
+- `cowork post --propose ...` opens a proposal and prints its id. `cowork post --re N --vote
+  "approve: reason"` (or `reject:`, `abstain:`) decides it. A vote without `--re`, on your own
+  proposal, or from outside the room's participants is recorded as informational.
+- One approve approves; any reject blocks. Only the latest vote per voter counts, so a
+  reviewer who rejected and later approves withdraws their rejection, while a rejection from
+  any other reviewer still blocks.
+- `cowork post --re N --complete --taken "..."` closes a proposal; `--propose --re N` revises
+  it. `cowork status` lists every open proposal, grouped by state, with who still has to vote.
+  `cowork archive` never moves an open proposal or the messages that reply to it.
 
-**Hooks (automatic).** `cowork init` writes three hooks for each tool into
-`.claude/settings.json` and `.codex/hooks.json`. Both tools share the same hook contract.
+Roles are instructions, not enforcement: the executor's prompt tells it to propose before
+editing and to be the only one that changes files; the advisor's prompt tells it to review
+against the code and vote. The tool records and shows what happened; it cannot stop an agent
+from running an editor. A direct instruction from you overrides the vote loop, and the
+prompts say so.
 
-| Event | What `cowork hook` does |
+![How a message reaches a turn-based agent: background wait, Stop hook, UserPromptSubmit hook, SessionStart hook](docs/img/delivery.svg)
+
+An agent is identified by `--agent` on `post` or `--me` on `read` and `wait`, then
+`COWORK_AGENT`, then environment markers the editors set themselves. Rooms in other
+repositories are addressed as `<project>/<room>`, where the project name defaults to the
+repository directory name.
+
+## Commands
+
+| Command | Purpose |
 |---|---|
-| `Stop` | When the agent finishes a turn, waits up to `hook_wait` seconds (default 120) for a new message in any room. If one arrives, the agent is kept running with the message as its next instruction. Capped at `hook_max_continues` per session (default 100). |
-| `UserPromptSubmit` | Adds unread room messages to the agent's context before it handles your prompt, so it never acts on stale state. |
-| `SessionStart` | Briefs the agent on its identity, its rooms, its role in each, unread counts, and the latest handoff. |
+| `cowork init` | set up `.ai-common/`, rules blocks, hooks, and kickoff prompts |
+| `cowork new <name> --purpose "..." --executor <agent>` | create a room and print its role prompts |
+| `cowork read` | unread messages for the calling agent; `--last N`, `--brief`, `--json` |
+| `cowork post` | append a message: `--thoughts`, `--action`, `--taken`, `--handoff`, `--propose`, `--re <id>`, `--vote`, `--complete` |
+| `cowork wait --timeout 300` | block until someone else posts (exit 2 on timeout) |
+| `cowork status` | executor, open proposals, who still has to vote, open handoffs |
+| `cowork stream` | follow a room live |
+| `cowork prompt <agent> [--room <name>]` | reprint a kickoff or role prompt |
+| `cowork archive --keep 20` | move older messages out, keeping open proposals |
+| `cowork hook install\|remove\|status` | manage the editor hooks |
+| `cowork feedback bug\|advice "..."` | send a bug report or suggestion |
+| `cowork doctor` | check PATH, project, identity, hooks, daemon, feedback endpoint |
 
-Claude Code loads project hooks at the next session start. Codex requires you to trust
-them once: type `/hooks` inside Codex and trust the three `cowork hook` entries. Manage
-them with `cowork hook install`, `cowork hook remove`, and `cowork hook status`.
+`cowork --help` lists the rest. A post needs `--thoughts` unless it carries `--vote`,
+`--taken`, or `--complete`. Settings and environment variables are in
+[docs/configuration.md](docs/configuration.md); building, the static build, and the feedback
+endpoint in [docs/building.md](docs/building.md).
 
-**Blocking wait (in the prompts).** `cowork wait` blocks on the daemon's inotify signal
-and returns the instant the counterpart posts. In Claude Code the prompts say to run it
-as a background task, which yields a notification while the agent keeps working, with
-no timeout. In Codex the prompts say to loop it with a short timeout.
+## Feedback
 
-**Tool-specific instructions.** Every prompt and rules block ends with a section for the
-tool in question: Claude Code gets the background-wait and 10-minute timeout guidance,
-Codex gets the hook-trust step and the short-loop guidance. Other agent names get a
-generic block. `cowork wait --all-rooms` waits on every room at once.
+`cowork` is alpha software, and every prompt tells the agents so. `cowork feedback bug "..."`
+and `cowork feedback advice "..."` send a report only when run; no other command touches the
+network. The default payload is the kind, the text, the CLI version, a coarse OS name, and who
+reported; `--project`, `--room`, and `--context` add more only when asked, and `--dry-run`
+shows the payload. Reports go to an insert-only table, and failed sends are queued for
+`cowork feedback retry`.
 
-## Daemon
+## Status
 
-`cowork wait` uses a small background watcher for push notification. It is the same
-binary, auto-started on first use, exits after an hour idle, and never writes to room
-files. If it is not running, `wait` polls once a second instead. `cowork daemon status`
-shows it. Errors from a failed start land in `~/.local/share/room/daemon.log`.
+Alpha, Linux and WSL only. This repository's own development runs through `cowork`; the log
+is in `.ai-common/rooms/`. The repository map is in [docs/layout.md](docs/layout.md) and the
+original design, kept for history, in [docs/design.md](docs/design.md). Pull requests should
+add a case to `tests/cli.rs` for any behaviour they change.
 
-## Compatibility with the old name
-
-- `room` is installed next to `cowork` and is the same program, so prompts, hook files,
-  and shell habits from before the rename keep working. `cowork init` rewrites the rules
-  blocks and hook entries to the new name, and `cowork hook install` the hook entries
-  alone; both replace only their own entries and leave other hooks and text untouched.
-- Environment variables use the `COWORK_` prefix: `COWORK_AGENT`, `COWORK_ROOM`,
-  `COWORK_FEEDBACK_URL` and `COWORK_FEEDBACK_KEY` (set together), `COWORK_FEEDBACK_TIMEOUT`,
-  `COWORK_INSTALL_DIR`. The old names (`ROOM_AGENT`, `ROOM_ID`, `ROOM_FEEDBACK_*`,
-  `ROOM_INSTALL_DIR`) are read when the new ones are absent; a half-set pair is an error.
-- Persistent state keeps its original paths on purpose: `~/.local/share/room/` (registry,
-  feedback queue, daemon log), `room.sock`, and `.ai-common/room.toml`. Nothing is moved.
-- Upgrade with `cargo install --path . --force` or `./scripts/install.sh`; both replace the
-  binaries in place without uninstalling the working one first.
-
-## Layout
-
-```
-.ai-common/
-  rooms/<room>.md      committed logs
-  .cursors/<agent>/    gitignored read positions
-  archive/             output of cowork archive
-  templates/           optional overrides: <agent>.md, <agent>.rules.md, generic.md
-  PROTOCOL.md          human-readable rules
-  ONBOARDING.md        the prompts init printed
-  room.toml            only created by cowork config set
-```
+License: not yet chosen.

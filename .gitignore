@@ -3,3 +3,4 @@ dist/
 .ai-common/.cursors/
 history
 .env
+export/

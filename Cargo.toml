@@ -1,9 +1,14 @@
 [package]
-name = "room-cli"
+name = "cowork"
 version = "0.1.0"
 edition = "2021"
-description = "Atomic, locked message rooms for coordinating AI coding agents on one repository"
+description = "cowork: locked message rooms that let AI coding agents work together on one repository"
 
+[[bin]]
+name = "cowork"
+path = "src/main.rs"
+
+# Compatibility alias: the tool was called `room` before. Same program, same behaviour.
 [[bin]]
 name = "room"
 path = "src/main.rs"

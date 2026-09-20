@@ -37,14 +37,16 @@ impl Project {
     }
 
     fn cmd(&self, agent: &str) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_room"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_cowork"));
         c.current_dir(&self.root)
-            .env("ROOM_AGENT", agent)
+            .env("COWORK_AGENT", agent)
             .env("XDG_DATA_HOME", self.root.join("xdg-data"))
             .env("XDG_RUNTIME_DIR", self.root.join("xdg-run"))
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
-            .env_remove("ROOM_ID");
+            .env_remove("ROOM_ID")
+            .env_remove("COWORK_ROOM")
+            .env_remove("ROOM_AGENT");
         c
     }
 
@@ -435,9 +437,9 @@ fn mock_server(status: u16, body: &'static str, delay_ms: u64, n: usize) -> (Str
 
 fn feedback(p: &Project, url: &str, args: &[&str], stdin: Option<&str>) -> Output {
     let mut c = p.cmd("codex");
-    c.env("ROOM_FEEDBACK_URL", url)
-        .env("ROOM_FEEDBACK_KEY", "sb_publishable_test")
-        .env("ROOM_FEEDBACK_TIMEOUT", "1")
+    c.env("COWORK_FEEDBACK_URL", url)
+        .env("COWORK_FEEDBACK_KEY", "sb_publishable_test")
+        .env("COWORK_FEEDBACK_TIMEOUT", "1")
         .args(["feedback"])
         .args(args)
         .stdin(Stdio::piped())
@@ -563,7 +565,7 @@ fn feedback_timeout_queues_and_retry_resends_to_the_original_endpoint() {
 
 #[test]
 fn binary_contains_no_server_side_credentials() {
-    let bin = fs::read(env!("CARGO_BIN_EXE_room")).unwrap();
+    let bin = fs::read(env!("CARGO_BIN_EXE_cowork")).unwrap();
     let text = String::from_utf8_lossy(&bin);
     assert!(!text.contains("sb_secret_"), "secret key must never be embedded");
     // If a .env exists next to Cargo.toml, its server-side values must be absent too.
@@ -600,27 +602,44 @@ fn feedback_partial_or_invalid_runtime_endpoint_is_an_error_not_a_fallback() {
     let p = Project::new("fb-endpoint");
     let (url, seen) = mock_server(201, "", 0, 1);
     // Only the url set in the environment.
-    let out = p.cmd("codex").env("ROOM_FEEDBACK_URL", &url).env_remove("ROOM_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
+    let out = p.cmd("codex").env("COWORK_FEEDBACK_URL", &url).env_remove("COWORK_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("incomplete"));
+    // A half-set primary pair is an error even when a complete legacy pair exists.
+    let out = p.cmd("codex").env("COWORK_FEEDBACK_URL", &url).env_remove("COWORK_FEEDBACK_KEY").env("ROOM_FEEDBACK_URL", &url).env("ROOM_FEEDBACK_KEY", "sb_publishable_legacy").args(["feedback", "bug", "x"]).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("COWORK_FEEDBACK_KEY is missing"));
+    // The legacy pair alone still works.
+    let out = p.cmd("codex").env_remove("COWORK_FEEDBACK_URL").env_remove("COWORK_FEEDBACK_KEY").env("ROOM_FEEDBACK_URL", &url).env("ROOM_FEEDBACK_KEY", "sb_publishable_legacy").args(["feedback", "bug", "legacy names"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     // Only the key set in room.toml.
     p.ok("codex", &["config", "set", "feedback_key", "sb_publishable_abc"]);
-    let out = p.cmd("codex").env_remove("ROOM_FEEDBACK_URL").env_remove("ROOM_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
+    let out = p.cmd("codex").env_remove("COWORK_FEEDBACK_URL").env_remove("COWORK_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("incomplete"));
     // A server-side key is refused at runtime as well as at build time.
     p.ok("codex", &["config", "set", "feedback_url", &url]);
     p.ok("codex", &["config", "set", "feedback_key", "sb_secret_nope"]);
-    let out = p.cmd("codex").env_remove("ROOM_FEEDBACK_URL").env_remove("ROOM_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
+    let out = p.cmd("codex").env_remove("COWORK_FEEDBACK_URL").env_remove("COWORK_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not a publishable key"));
-    assert!(seen.lock().unwrap().is_empty(), "nothing was sent in any of these cases");
+    assert_eq!(seen.lock().unwrap().len(), 1, "only the legacy-pair send went out; every error case sent nothing");
     assert!(queue_files(&p).is_empty(), "nothing was queued either");
     // A complete, valid room.toml pair works.
+    let (url2, seen2) = mock_server(201, "", 0, 1);
+    p.ok("codex", &["config", "set", "feedback_url", &url2]);
     p.ok("codex", &["config", "set", "feedback_key", "sb_publishable_abc"]);
-    let out = p.cmd("codex").env_remove("ROOM_FEEDBACK_URL").env_remove("ROOM_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
+    let out = p.cmd("codex").env_remove("COWORK_FEEDBACK_URL").env_remove("COWORK_FEEDBACK_KEY").args(["feedback", "bug", "x"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(seen2.lock().unwrap().len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 1, "only the legacy-pair send reached the first server");
+    // Source labels: environment for either env pair, room.toml for the config pair.
+    let out = p.cmd("codex").env("COWORK_FEEDBACK_URL", &url).env("COWORK_FEEDBACK_KEY", "sb_publishable_x").args(["feedback", "status"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("(environment)"), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = p.cmd("codex").env_remove("COWORK_FEEDBACK_URL").env_remove("COWORK_FEEDBACK_KEY").env("ROOM_FEEDBACK_URL", &url).env("ROOM_FEEDBACK_KEY", "sb_publishable_x").args(["feedback", "status"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("(environment)"), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = p.cmd("codex").env_remove("COWORK_FEEDBACK_URL").env_remove("COWORK_FEEDBACK_KEY").args(["feedback", "status"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("(room.toml)"), "{}", String::from_utf8_lossy(&out.stdout));
 }
 
 #[test]
@@ -669,7 +688,7 @@ fn proposal_state_table() {
     // main has no executor in its front matter: falls back to the first participant (claude).
     let p = Project::new("prop-states");
     let out = p.ok("claude", &["post", "--propose", "--thoughts", "why", "--action", "change a.rs"]);
-    assert!(out.contains("posted #1") && out.contains("(proposal; codex votes with: room post --room main --re 1"), "{out}");
+    assert!(out.contains("posted #1") && out.contains("(proposal; codex votes with: cowork post --room main --re 1"), "{out}");
     let s = status_json(&p);
     assert_eq!(s["executor"], "claude");
     assert_eq!(proposal(&s, 1)["state"], "pending");
@@ -833,7 +852,7 @@ fn vote_only_post_matches_the_printed_hint() {
     let out = p.ok("claude", &["post", "--propose", "--thoughts", "t", "--action", "x"]);
     // Extract the hinted command and run it as codex, verbatim apart from the reason.
     let hint = out.split("votes with: ").nth(1).unwrap().split(" [--thoughts").next().unwrap().to_string();
-    assert_eq!(hint, "room post --room main --re 1 --vote \"approve: reason\"");
+    assert_eq!(hint, "cowork post --room main --re 1 --vote \"approve: reason\"");
     let out = post_args(&p, "codex", &["--room", "main", "--re", "1", "--vote", "approve: reason"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("(approve on #1)"));
@@ -927,12 +946,128 @@ fn role_prompts_teach_the_loop_without_acknowledgement_posts() {
     let p = Project::new("prompts");
     p.ok("claude", &["new", "r1", "--purpose", "t", "--executor", "claude"]);
     let ex = p.ok("claude", &["prompt", "claude", "--room", "r1"]);
-    for phrase in ["--propose", "--complete --re", "never re-request a vote", "A post needs --thoughts unless", "room read --room r1 --brief", "A direct instruction from the user overrides"] {
+    for phrase in ["--propose", "--complete --re", "never re-request a vote", "A post needs --thoughts unless", "cowork read --room r1 --brief", "A direct instruction from the user overrides"] {
         assert!(ex.contains(phrase), "executor prompt lacks `{phrase}`:\n{ex}");
     }
     let ad = p.ok("claude", &["prompt", "codex", "--room", "r1"]);
-    for phrase in ["--re N --vote", "never post only to confirm", "your counted vote is the acknowledgement", "room feedback bug"] {
+    for phrase in ["--re N --vote", "never post only to confirm", "your counted vote is the acknowledgement", "cowork feedback bug"] {
         assert!(ad.contains(phrase), "advisor prompt lacks `{phrase}`:\n{ad}");
     }
     assert!(!ex.contains("Only --thoughts is required") && !ad.contains("Only --thoughts is required"));
+    // Printing a prompt is read-only for the repository: the saved copy is untouched.
+    let saved = p.root.join(".ai-common/prompts/r1.md");
+    fs::write(&saved, "kept as is").unwrap();
+    p.ok("claude", &["prompt", "claude", "--room", "r1"]);
+    assert_eq!(fs::read_to_string(&saved).unwrap(), "kept as is");
+    assert!(!p.run("claude", &["prompt", "nobody", "--room", "r1"], None).status.success());
+    assert_eq!(fs::read_to_string(&saved).unwrap(), "kept as is", "an invalid agent changes nothing either");
+}
+
+// ---------- rename: upgrade paths ----------
+
+#[test]
+fn legacy_room_agent_and_room_id_still_identify_the_caller_and_room() {
+    let p = Project::new("legacy-env");
+    let out = p.cmd("ignored").env_remove("COWORK_AGENT").env("ROOM_AGENT", "codex").args(["post", "--thoughts", "via legacy name"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("as codex"));
+    p.ok("claude", &["new", "side", "--purpose", "t"]);
+    let out = p.cmd("claude").env("ROOM_ID", "side").args(["post", "--thoughts", "into side via ROOM_ID"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("/side as claude"), "{}", String::from_utf8_lossy(&out.stdout));
+    let out = p.cmd("claude").env("COWORK_ROOM", "side").env("ROOM_ID", "main").args(["post", "--thoughts", "COWORK_ROOM wins"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("/side as claude"));
+}
+
+#[test]
+fn old_hook_entries_are_replaced_not_duplicated() {
+    let p = Project::new("legacy-hooks");
+    let f = p.root.join(".claude/settings.json");
+    let old = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"room hook stop --agent claude","timeout":150}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"room hook prompt --agent claude","timeout":20}]}],"SessionStart":[{"hooks":[{"type":"command","command":"room hook session --agent claude","timeout":20}]}]},"other":true}"#;
+    fs::write(&f, old).unwrap();
+    assert!(p.ok("claude", &["hook", "status"]).contains("claude  installed"), "old entries count as installed");
+    p.ok("claude", &["hook", "install", "--tool", "claude"]);
+    let text = fs::read_to_string(&f).unwrap();
+    assert_eq!(text.matches("hook stop").count(), 1, "no duplicate Stop entry:\n{text}");
+    assert!(text.contains("cowork hook stop --agent claude") && !text.contains("room hook"), "{text}");
+    assert!(text.contains("\"other\": true"), "unrelated settings kept");
+    p.ok("claude", &["hook", "remove", "--tool", "claude"]);
+    let text = fs::read_to_string(&f).unwrap();
+    assert!(!text.contains("hook") && text.contains("other"), "{text}");
+}
+
+#[test]
+fn old_rules_block_is_replaced_by_one_cowork_block() {
+    let p = Project::new("legacy-rules");
+    let f = p.root.join("CLAUDE.md");
+    fs::write(&f, "# Mine\n\nkeep this\n\n<!-- room-cli:start -->\n## room-cli: coordinating with codex\nold text\n<!-- room-cli:end -->\n\nand this\n").unwrap();
+    p.ok("claude", &["init", "--quiet"]);
+    let text = fs::read_to_string(&f).unwrap();
+    assert_eq!(text.matches("<!-- cowork:start -->").count(), 1, "{text}");
+    assert!(!text.contains("room-cli:start") && !text.contains("old text"), "{text}");
+    assert!(text.contains("keep this") && text.contains("and this"), "{text}");
+    assert!(text.contains("## cowork: coordinating with codex"), "{text}");
+    // Re-running init on the new block keeps a single block too.
+    p.ok("claude", &["init", "--quiet"]);
+    assert_eq!(fs::read_to_string(&f).unwrap().matches("<!-- cowork:start -->").count(), 1);
+}
+
+#[test]
+fn room_alias_binary_is_the_same_program() {
+    let p = Project::new("alias");
+    let alias = std::path::Path::new(env!("CARGO_BIN_EXE_cowork")).with_file_name("room");
+    assert!(alias.exists(), "alias binary built next to cowork");
+    let out = Command::new(&alias)
+        .current_dir(&p.root)
+        .env("COWORK_AGENT", "codex")
+        .env("XDG_DATA_HOME", p.root.join("xdg-data"))
+        .env("XDG_RUNTIME_DIR", p.root.join("xdg-run"))
+        .args(["post", "--thoughts", "from the alias"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(p.ok("claude", &["read"]).contains("from the alias"));
+    let v = Command::new(&alias).arg("--version").output().unwrap();
+    assert!(String::from_utf8_lossy(&v.stdout).starts_with("cowork "));
+}
+
+#[test]
+fn generated_prompts_and_protocol_use_the_new_name() {
+    let p = Project::new("new-name");
+    let proto = fs::read_to_string(p.root.join(".ai-common/PROTOCOL.md")).unwrap();
+    assert!(proto.contains("`cowork`") && !proto.contains("`room post") && !proto.contains("room-cli"), "{proto}");
+    let k = p.ok("claude", &["prompt", "claude"]);
+    assert!(k.contains("`cowork` CLI") && k.contains("COWORK_AGENT=claude") && !k.contains("ROOM_AGENT"), "{k}");
+    let rules = fs::read_to_string(p.root.join("AGENTS.md")).unwrap();
+    assert!(rules.contains("## cowork: coordinating with claude") && rules.contains("cowork feedback bug"), "{rules}");
+}
+
+#[test]
+fn init_keeps_a_customized_protocol_file() {
+    let p = Project::new("custom-protocol");
+    let f = p.root.join(".ai-common/PROTOCOL.md");
+    let mut text = fs::read_to_string(&f).unwrap();
+    text.push_str("\n## House rule\n\nAlways run the linter first.\n");
+    fs::write(&f, &text).unwrap();
+    p.ok("claude", &["init", "--quiet"]);
+    assert_eq!(fs::read_to_string(&f).unwrap(), text, "init is create-only for PROTOCOL.md");
+}
+
+#[test]
+fn hook_upgrade_keeps_unrelated_entries_in_a_mixed_group() {
+    let p = Project::new("mixed-hooks");
+    let f = p.root.join(".claude/settings.json");
+    let mixed = r#"{"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"room hook stop --agent claude","timeout":150},{"type":"command","command":"say done","timeout":5}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"lint"}]}]}}"#;
+    fs::write(&f, mixed).unwrap();
+    p.ok("claude", &["hook", "install", "--tool", "claude"]);
+    let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&f).unwrap()).unwrap();
+    let stop = v["hooks"]["Stop"].as_array().unwrap();
+    let text = v.to_string();
+    assert!(!text.contains("room hook"), "legacy entry replaced: {text}");
+    assert_eq!(text.matches("cowork hook stop").count(), 1, "{text}");
+    assert!(text.contains("say done") && text.contains("\"matcher\":\"*\""), "unrelated entry and group metadata kept: {text}");
+    assert!(text.contains("lint"), "other events untouched");
+    assert_eq!(stop.len(), 2, "the mixed group survives beside our own group: {text}");
+    p.ok("claude", &["hook", "remove", "--tool", "claude"]);
+    let text = fs::read_to_string(&f).unwrap();
+    assert!(!text.contains("hook stop") && text.contains("say done") && text.contains("lint"), "{text}");
 }

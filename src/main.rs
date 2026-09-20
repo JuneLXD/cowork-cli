@@ -5,6 +5,7 @@ mod config;
 mod cursor;
 mod daemon;
 mod feedback;
+mod feedback_env;
 mod hooks;
 mod menu;
 mod paths;

@@ -57,7 +57,7 @@ pub fn current_project() -> Result<Project> {
         .or_else(|| find_git_root(&cwd))
         .ok_or_else(|| {
             anyhow!(
-                "not inside a project (no {AI_DIR}/ or .git found above {}). Run `room init` inside a git repository.",
+                "not inside a project (no {AI_DIR}/ or .git found above {}). Run `cowork init` inside a git repository.",
                 cwd.display()
             )
         })?;
@@ -99,7 +99,7 @@ pub fn is_initialized(root: &Path) -> bool {
 pub fn ensure_initialized(p: &Project) -> Result<()> {
     if !is_initialized(&p.root) {
         bail!(
-            "project `{}` is not initialized: run `room init` in {}",
+            "project `{}` is not initialized: run `cowork init` in {}",
             p.name,
             p.root.display()
         );
@@ -113,6 +113,9 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
+/// Persistent state lives under `room/` and the socket is `room.sock`: these are
+/// the tool's original names, kept unchanged when it was renamed to cowork so
+/// no registry, queue, or daemon state is lost. They are internals, not branding.
 pub fn data_dir() -> PathBuf {
     env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -160,7 +163,7 @@ pub fn validate_room_name(name: &str) -> Result<()> {
 
 fn registry_project(name: &str) -> Result<Project> {
     let root = registry::lookup(name).ok_or_else(|| {
-        anyhow!("unknown project `{name}`: run `room init` there first, or check `room list --all`")
+        anyhow!("unknown project `{name}`: run `cowork init` there first, or check `cowork list --all`")
     })?;
     Ok(Project {
         root,
@@ -168,10 +171,12 @@ fn registry_project(name: &str) -> Result<Project> {
     })
 }
 
-/// Resolve `<room>` or `<project>/<room>`. Falls back to `ROOM_ID`, then `main`.
+/// Resolve `<room>` or `<project>/<room>`. Falls back to `COWORK_ROOM` (or the
+/// legacy `ROOM_ID`), then `main`.
 pub fn resolve_room(addr: Option<&str>) -> Result<RoomRef> {
     let addr = addr
         .map(String::from)
+        .or_else(|| env::var("COWORK_ROOM").ok().filter(|s| !s.trim().is_empty()))
         .or_else(|| env::var("ROOM_ID").ok().filter(|s| !s.trim().is_empty()))
         .unwrap_or_else(|| "main".to_string());
     let (proj_name, room) = match addr.split_once('/') {
@@ -198,7 +203,7 @@ pub fn ensure_room_exists(rr: &RoomRef) -> Result<()> {
     ensure_initialized(&rr.project)?;
     if !rr.path.exists() {
         bail!(
-            "room `{}` does not exist in project `{}`. Create it with `room new {}`.",
+            "room `{}` does not exist in project `{}`. Create it with `cowork new {}`.",
             rr.room,
             rr.project.name,
             rr.room

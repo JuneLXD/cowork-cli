@@ -59,7 +59,7 @@ pub fn ensure_running() -> Result<UnixStream> {
         .map(|l| format!("; last log line: {l}"))
         .unwrap_or_default();
     Err(anyhow!(
-        "daemon did not start (socket {}){reason}. Run `room daemon run` in the foreground to debug; log at {}",
+        "daemon did not start (socket {}){reason}. Run `cowork daemon run` in the foreground to debug; log at {}",
         paths::socket_path().display(),
         paths::log_path().display()
     ))

@@ -1,6 +1,6 @@
 # Feedback table
 
-`feedback.sql` creates the `public.feedback` table that `room feedback bug|advice` writes to.
+`feedback.sql` creates the `public.feedback` table that `cowork feedback bug|advice` writes to.
 Apply it once per Supabase project, either in the dashboard SQL editor or through the
 Management API with a personal access token:
 

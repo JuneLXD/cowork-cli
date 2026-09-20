@@ -2,9 +2,9 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "room",
+    name = "cowork",
     version,
-    about = "Atomic, locked message rooms for coordinating AI coding agents on one repository",
+    about = "cowork: locked message rooms that let AI coding agents work together on one repository",
     long_about = None
 )]
 pub struct Cli {
@@ -124,7 +124,7 @@ pub enum Cmd {
         #[command(subcommand)]
         action: HookCmd,
     },
-    /// Report a bug or send advice to the room-cli maintainers (alpha software)
+    /// Report a bug or send advice to the cowork maintainers (alpha software)
     Feedback {
         #[command(subcommand)]
         action: FeedbackCmd,
@@ -133,9 +133,9 @@ pub enum Cmd {
 
 #[derive(Subcommand)]
 pub enum FeedbackCmd {
-    /// Report a bug: `room feedback bug "what happened"` (or --file -)
+    /// Report a bug: `cowork feedback bug "what happened"` (or --file -)
     Bug(ReportArgs),
-    /// Send a suggestion: `room feedback advice "what would help"`
+    /// Send a suggestion: `cowork feedback advice "what would help"`
     Advice(ReportArgs),
     /// Resend reports that could not be delivered earlier
     Retry,

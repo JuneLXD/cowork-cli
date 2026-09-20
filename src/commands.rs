@@ -65,6 +65,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
         fs::write(&main, fm.render())?;
         created.push(".ai-common/rooms/main.md");
     }
+    // Create-only: people add their own rules to PROTOCOL.md. Delete it to regenerate.
     let proto = paths::protocol_path(&root);
     if !proto.exists() {
         fs::write(&proto, templates::protocol())?;
@@ -92,7 +93,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
                 .join(" or ");
             templates::rules(
                 &root,
-                &format!("{names} (set ROOM_AGENT to your name)"),
+                &format!("{names} (set COWORK_AGENT to your name)"),
                 "the other agents",
                 &project.name,
             )
@@ -115,7 +116,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
 
     // Onboarding prompts.
     let mut onboarding = format!(
-        "# room-cli onboarding for `{}`\n\nPaste the matching prompt into each tool's session. Regenerate any time with `room prompt <agent>`.\n\n",
+        "# cowork onboarding for `{}`\n\nPaste the matching prompt into each tool's session. Regenerate any time with `cowork prompt <agent>`.\n\n",
         project.name
     );
     let mut printed = String::new();
@@ -229,7 +230,7 @@ pub fn post(a: PostArgs) -> Result<()> {
         None => bail!("--thoughts <TEXT> or --thoughts-file <PATH> is required (a post with only --vote, --complete, or --taken may omit it)"),
     };
     if let Some(0) = a.re {
-        bail!("--re needs a message id of 1 or more (ids are printed by `room post` and shown in `room read`)");
+        bail!("--re needs a message id of 1 or more (ids are printed by `cowork post` and shown in `cowork read`)");
     }
     let mut msg = Message {
         id: None,
@@ -293,7 +294,7 @@ pub fn post(a: PostArgs) -> Result<()> {
                     }
                 }
             } else if !msg.vote.is_empty() {
-                note = Some(format!("note: #{re} is not a proposal, so this vote is informational; vote on the proposal id shown by `room status`"));
+                note = Some(format!("note: #{re} is not a proposal, so this vote is informational; vote on the proposal id shown by `cowork status`"));
             }
         } else if !msg.vote.is_empty() {
             note = Some("note: this vote is not linked to a proposal; add --re <id> so it counts as the decision on that proposal".to_string());
@@ -306,7 +307,7 @@ pub fn post(a: PostArgs) -> Result<()> {
     let mut tag = String::new();
     if msg.proposal {
         let others = agent::counterpart(&me, &participants);
-        tag = format!(" (proposal; {others} votes with: room post --room {} --re {id} --vote \"approve: reason\" [--thoughts \"...\"])", rr.room);
+        tag = format!(" (proposal; {others} votes with: cowork post --room {} --re {id} --vote \"approve: reason\" [--thoughts \"...\"])", rr.room);
     } else if let Some(c) = msg.completes {
         tag = format!(" (completes #{c})");
     } else if let Some(n) = &note {
@@ -325,7 +326,7 @@ pub fn post(a: PostArgs) -> Result<()> {
         let ids: Vec<String> = unread_behind.iter().filter(|(i, _)| *i > 0).map(|(i, _)| format!("#{i}")).collect();
         let ids = if ids.is_empty() { String::new() } else { format!(" ({})", ids.join(", ")) };
         eprintln!(
-            "note: {} unread message(s) from {}{ids} precede this post; run `room read --room {}` before acting on their replies",
+            "note: {} unread message(s) from {}{ids} precede this post; run `cowork read --room {}` before acting on their replies",
             unread_behind.len(),
             agents.join(", "),
             rr.room
@@ -460,7 +461,7 @@ pub fn read(a: ReadArgs) -> Result<()> {
             .collect();
     } else {
         let me = agent::detect(a.me.as_deref()).map_err(|_| {
-            anyhow!("unread mode needs to know who you are: pass --me <NAME>, set ROOM_AGENT, or use --tail/--last/--since")
+            anyhow!("unread mode needs to know who you are: pass --me <NAME>, set COWORK_AGENT, or use --tail/--last/--since")
         })?;
         let cur = cursor::load(&rr.project.root, &me, &rr.room);
         match cursor::unread_index(&rf.messages, cur.as_deref()) {
@@ -622,7 +623,7 @@ pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>) -
     println!("created room {}/{} (executor: {executor})", project.name, name);
     println!();
     print!("{}", room_prompts_text(&project, name)?);
-    println!("saved to .ai-common/prompts/{name}.md; reprint with `room prompt <agent> --room {name}`");
+    println!("saved to .ai-common/prompts/{name}.md; reprint with `cowork prompt <agent> --room {name}`");
     Ok(())
 }
 
@@ -633,7 +634,7 @@ pub fn delete_room(name: &str, yes: bool) -> Result<()> {
     paths::ensure_initialized(&project)?;
     paths::validate_room_name(name)?;
     if name == "main" {
-        bail!("`main` is the default room and cannot be deleted; use `room archive --room main` to clear it");
+        bail!("`main` is the default room and cannot be deleted; use `cowork archive --room main` to clear it");
     }
     let path = paths::room_path(&project.root, name);
     if !path.exists() {
@@ -843,7 +844,7 @@ pub fn list(all: bool) -> Result<()> {
     if all {
         let projects = registry::live_projects();
         if projects.is_empty() {
-            println!("no registered projects yet (run `room init` in a repository)");
+            println!("no registered projects yet (run `cowork init` in a repository)");
             return Ok(());
         }
         for (name, root) in projects {
@@ -1029,14 +1030,14 @@ pub fn home() -> Result<()> {
             let parts = agent::participants(&cfg);
             println!();
             println!("agents: {}", parts.join(", "));
-            println!("  kickoff prompt:  room prompt <agent> [--copy]");
-            println!("  rules block:     room prompt <agent> --rules");
-            println!("  check setup:     room doctor");
-            println!("  help:            room --help");
+            println!("  kickoff prompt:  cowork prompt <agent> [--copy]");
+            println!("  rules block:     cowork prompt <agent> --rules");
+            println!("  check setup:     cowork doctor");
+            println!("  help:            cowork --help");
         }
         _ => {
-            println!("room-cli is not set up here.");
-            println!("Run `room init` inside a git repository to create .ai-common/, write the rules blocks, and print the prompts for each agent.");
+            println!("cowork is not set up here.");
+            println!("Run `cowork init` inside a git repository to create .ai-common/, write the rules blocks, and print the prompts for each agent.");
         }
     }
     Ok(())
@@ -1097,7 +1098,7 @@ pub fn prompt(agent_name: &str, rules: bool, copy: bool, room_name: Option<&str>
 
 pub fn lock(path: &str, command: &[String]) -> Result<i32> {
     if command.is_empty() {
-        bail!("usage: room lock <path> -- <command...>");
+        bail!("usage: cowork lock <path> -- <command...>");
     }
     let f = OpenOptions::new()
         .read(true)
@@ -1253,7 +1254,7 @@ pub fn daemon_cmd(action: DaemonCmd) -> Result<()> {
                     "running: pid {}, up {}s, watching {} dirs, socket {}",
                     v["pid"], v["uptime_s"], v["watched_dirs"], paths::socket_path().display()
                 ),
-                None => println!("not running (auto-starts when `room wait` needs it)"),
+                None => println!("not running (auto-starts when `cowork wait` needs it)"),
             }
             Ok(())
         }
@@ -1274,53 +1275,53 @@ pub fn doctor() -> Result<()> {
 
     // binary on PATH
     let on_path = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join("room").is_file()))
+        .map(|p| std::env::split_paths(&p).any(|d| d.join("cowork").is_file()))
         .unwrap_or(false);
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    line(on_path, false, if on_path { format!("`room` is on PATH ({exe})") } else { format!("`room` is not on PATH (running {exe}); add its directory, e.g. ~/.local/bin, to PATH") });
+    line(on_path, false, if on_path { format!("`cowork` is on PATH ({exe})") } else { format!("`cowork` is not on PATH (running {exe}); add its directory, e.g. ~/.local/bin, to PATH") });
 
     // project
     let project = paths::current_project().ok();
     match &project {
         Some(p) => {
             let init = paths::is_initialized(&p.root);
-            line(init, false, if init { format!("project `{}` initialized at {}", p.name, p.root.display()) } else { format!("project `{}` found at {} but not initialized; run `room init`", p.name, p.root.display()) });
+            line(init, false, if init { format!("project `{}` initialized at {}", p.name, p.root.display()) } else { format!("project `{}` found at {} but not initialized; run `cowork init`", p.name, p.root.display()) });
             let git = p.root.join(".git").exists();
             line(git, true, if git { "git repository detected".into() } else { "no .git at project root (initialized with --no-git?)".into() });
             if init {
                 let main = paths::room_path(&p.root, "main").exists();
-                line(main, false, if main { "room main exists".into() } else { "room main is missing; run `room init`".into() });
+                line(main, false, if main { "room main exists".into() } else { "room main is missing; run `cowork init`".into() });
                 let cfg = config::load(&p.root);
                 for a in agent::participants(&cfg) {
                     let f = p.root.join(templates::rules_file(&a));
-                    let has = fs::read_to_string(&f).map(|s| s.contains(templates::START)).unwrap_or(false);
-                    line(has, false, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("rules block for {a} missing from {}; run `room init`", templates::rules_file(&a)) });
+                    let has = fs::read_to_string(&f).map(|s| s.contains(templates::START) || s.contains(templates::LEGACY_START)).unwrap_or(false);
+                    line(has, false, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("rules block for {a} missing from {}; run `cowork init`", templates::rules_file(&a)) });
                 }
                 for t in ["claude", "codex"] {
                     if agent::participants(&cfg).iter().any(|a| a == t) {
                         let has = crate::hooks::installed(&p.root, t);
                         let f = crate::hooks::hook_file(&p.root, t);
                         let f = f.strip_prefix(&p.root).map(|x| x.display().to_string()).unwrap_or_default();
-                        line(has, false, if has { format!("room hooks for {t} installed in {f}") } else { format!("room hooks for {t} missing from {f}; run `room hook install`") });
+                        line(has, false, if has { format!("room hooks for {t} installed in {f}") } else { format!("room hooks for {t} missing from {f}; run `cowork hook install`") });
                     }
                 }
                 let reg = registry::lookup(&p.name).is_some();
-                line(reg, false, if reg { "project registered for cross-project addressing".into() } else { "project not in registry; run `room init` again".into() });
+                line(reg, false, if reg { "project registered for cross-project addressing".into() } else { "project not in registry; run `cowork init` again".into() });
             }
         }
-        None => line(false, false, "not inside a project: run `room init` inside a git repository".into()),
+        None => line(false, false, "not inside a project: run `cowork init` inside a git repository".into()),
     }
 
     // agent identity
     match agent::detect_env() {
         Some((a, src)) => line(true, false, format!("calling agent detected as `{a}` (via {src})")),
-        None => line(false, true, "calling agent unknown in this shell; agents' own shells set markers, otherwise use ROOM_AGENT=<name> or --agent".into()),
+        None => line(false, true, "calling agent unknown in this shell; agents' own shells set markers, otherwise use COWORK_AGENT=<name> or --agent".into()),
     }
 
     // daemon
     match daemon::ping() {
         Some(v) => line(true, false, format!("daemon running (pid {}, watching {} dirs)", v["pid"], v["watched_dirs"])),
-        None => line(false, true, "daemon not running; it auto-starts when `room wait` needs it (`room daemon start` to test)".into()),
+        None => line(false, true, "daemon not running; it auto-starts when `cowork wait` needs it (`cowork daemon start` to test)".into()),
     }
 
     // feedback endpoint
@@ -1331,7 +1332,7 @@ pub fn doctor() -> Result<()> {
     let clip = ["clip.exe", "xclip", "wl-copy"].iter().find(|b| which(b));
     match clip {
         Some(b) => line(true, false, format!("clipboard tool available: {b}")),
-        None => line(false, true, "no clipboard tool (clip.exe/xclip/wl-copy); `room prompt --copy` will not work".into()),
+        None => line(false, true, "no clipboard tool (clip.exe/xclip/wl-copy); `cowork prompt --copy` will not work".into()),
     }
 
     if problems == 0 {

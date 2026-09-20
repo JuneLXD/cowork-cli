@@ -1,4 +1,4 @@
--- room-cli feedback table. Run once in the Supabase SQL editor.
+-- cowork feedback table. Run once in the Supabase SQL editor.
 -- The CLI ships only the publishable key, which can insert reports and nothing else.
 
 create table public.feedback (

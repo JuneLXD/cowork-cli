@@ -1,4 +1,4 @@
-//! `room feedback`: bug reports and advice for the room-cli maintainers.
+//! `cowork feedback`: bug reports and advice for the cowork maintainers.
 //!
 //! A report is sent only when the user or agent runs this command. The default
 //! payload is the report kind, the text, the CLI version, a coarse OS name, and
@@ -6,7 +6,7 @@
 //! opt-in. Reports go to an insert-only table; the key shipped in the binary can
 //! write reports but never read them. A report that cannot be sent is queued
 //! locally, pinned to the endpoint it was written for, and resent only by an
-//! explicit `room feedback retry`.
+//! explicit `cowork feedback retry`.
 
 use crate::cli::{FeedbackCmd, ReportArgs};
 use crate::{agent, config, paths};
@@ -62,20 +62,26 @@ pub const KEY_PREFIX: &str = "sb_publishable_";
 /// elsewhere. Every key must be a publishable one.
 pub fn endpoint() -> Result<Option<Endpoint>> {
     let clean = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let var = |name: &str| std::env::var(name).ok();
+    let env_pair = crate::feedback_env::resolve_pair(
+        (var("COWORK_FEEDBACK_URL"), var("COWORK_FEEDBACK_KEY")),
+        (var("ROOM_FEEDBACK_URL"), var("ROOM_FEEDBACK_KEY")),
+    )
+    .map_err(|e| anyhow!("feedback endpoint from the environment is incomplete: {e}"))?;
+    let (env_src, env_url, env_key): (&'static str, Option<String>, Option<String>) = match env_pair {
+        Some((u, k, src)) => (src, Some(u), Some(k)),
+        None => ("environment", None, None),
+    };
     let sources: [(&'static str, Option<String>, Option<String>); 3] = [
-        (
-            "environment (ROOM_FEEDBACK_URL / ROOM_FEEDBACK_KEY)",
-            clean(std::env::var("ROOM_FEEDBACK_URL").ok()),
-            clean(std::env::var("ROOM_FEEDBACK_KEY").ok()),
-        ),
+        (env_src, env_url, env_key),
         {
             let cfg = paths::current_project().ok().map(|p| config::load(&p.root)).unwrap_or_default();
             ("room.toml (feedback_url / feedback_key)", clean(cfg.feedback_url), clean(cfg.feedback_key))
         },
         (
             "built in",
-            clean(Some(env!("ROOM_FEEDBACK_URL").to_string())),
-            clean(Some(env!("ROOM_FEEDBACK_KEY").to_string())),
+            clean(Some(env!("COWORK_FEEDBACK_URL").to_string())),
+            clean(Some(env!("COWORK_FEEDBACK_KEY").to_string())),
         ),
     ];
     for (source, url, key) in sources {
@@ -88,11 +94,12 @@ pub fn endpoint() -> Result<Option<Endpoint>> {
                 if !key.starts_with(KEY_PREFIX) {
                     bail!("feedback key from {source} is not a publishable key (expected a value starting with {KEY_PREFIX}); server-side keys are refused");
                 }
-                let name = source.split(' ').next().unwrap_or(source);
-                let name: &'static str = match name {
-                    "environment" => "environment",
-                    "room.toml" => "room.toml",
-                    _ => "built in",
+                let name: &'static str = if source.starts_with("room.toml") {
+                    "room.toml"
+                } else if source == "built in" {
+                    "built in"
+                } else {
+                    "environment"
                 };
                 return Ok(Some(Endpoint { url: url.trim_end_matches('/').to_string(), key, source: name }));
             }
@@ -110,8 +117,9 @@ fn queue_dir() -> PathBuf {
 }
 
 fn timeout() -> Duration {
-    let secs = std::env::var("ROOM_FEEDBACK_TIMEOUT")
+    let secs = std::env::var("COWORK_FEEDBACK_TIMEOUT")
         .ok()
+        .or_else(|| std::env::var("ROOM_FEEDBACK_TIMEOUT").ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TIMEOUT);
     Duration::from_secs(secs)
@@ -258,8 +266,8 @@ fn report_bad(bad: &[PathBuf]) {
 
 fn no_endpoint() -> anyhow::Error {
     anyhow!(
-        "no feedback endpoint in this build. Set `room config set feedback_url <url>` and `feedback_key <publishable key>`, \
-         or export ROOM_FEEDBACK_URL and ROOM_FEEDBACK_KEY, or rebuild with a .env containing project_ID and publishable_key."
+        "no feedback endpoint in this build. Set `cowork config set feedback_url <url>` and `feedback_key <publishable key>`, \
+         or export COWORK_FEEDBACK_URL and COWORK_FEEDBACK_KEY, or rebuild with a .env containing project_ID and publishable_key."
     )
 }
 
@@ -317,7 +325,7 @@ fn report(kind: &str, a: ReportArgs) -> Result<i32> {
         }
         Outcome::Failed(why) => {
             let p = enqueue(&ep.url, &ep.key, &rep)?;
-            println!("queued {kind} report {} ({why}); saved at {}. Resend with `room feedback retry`.", rep.id, p.display());
+            println!("queued {kind} report {} ({why}); saved at {}. Resend with `cowork feedback retry`.", rep.id, p.display());
             Ok(3)
         }
     }
@@ -362,7 +370,7 @@ fn list() -> Result<i32> {
         let first: String = first.chars().take(80).collect();
         println!("{}  {:<6}  {}  {}", q.report.id, q.report.kind, q.url, first);
     }
-    println!("{} queued in {}; resend with `room feedback retry`", items.len(), queue_dir().display());
+    println!("{} queued in {}; resend with `cowork feedback retry`", items.len(), queue_dir().display());
     Ok(if bad.is_empty() { 0 } else { 3 })
 }
 
@@ -378,11 +386,11 @@ fn status() -> Result<i32> {
     Ok(if bad.is_empty() { 0 } else { 3 })
 }
 
-/// For `room doctor`.
+/// For `cowork doctor`.
 pub fn describe() -> (bool, String) {
     match endpoint() {
         Ok(Some(ep)) => (true, format!("feedback endpoint configured ({}, from {})", ep.url, ep.source)),
-        Ok(None) => (false, "no feedback endpoint in this build; `room feedback` will explain how to set one".to_string()),
+        Ok(None) => (false, "no feedback endpoint in this build; `cowork feedback` will explain how to set one".to_string()),
         Err(e) => (false, format!("feedback endpoint misconfigured: {e}")),
     }
 }

@@ -1,3 +1,5 @@
+> Written when the tool was called room-cli and the command was `room`. The tool is now **cowork** and the command is `cowork` (`room` remains as an alias); the concepts are unchanged.
+
 # room-cli
 
 ## Overview

@@ -6,9 +6,12 @@ pub const DEFAULT_AGENTS: &[&str] = &["claude", "codex"];
 
 /// Detect the calling agent from the environment. Returns (name, source).
 pub fn detect_env() -> Option<(String, &'static str)> {
-    if let Ok(a) = env::var("ROOM_AGENT") {
-        if !a.trim().is_empty() {
-            return Some((a.trim().to_string(), "ROOM_AGENT"));
+    for var in ["COWORK_AGENT", "ROOM_AGENT"] {
+        if let Ok(a) = env::var(var) {
+            if !a.trim().is_empty() {
+                let src: &'static str = if var == "COWORK_AGENT" { "COWORK_AGENT" } else { "ROOM_AGENT (legacy name)" };
+                return Some((a.trim().to_string(), src));
+            }
         }
     }
     if env::var_os("CLAUDECODE").is_some() || env::var_os("CLAUDE_CODE_ENTRYPOINT").is_some() {
@@ -30,7 +33,7 @@ pub fn detect(flag: Option<&str>) -> Result<String> {
         }
     }
     detect_env().map(|(a, _)| a).ok_or_else(|| {
-        anyhow!("cannot determine which agent is calling: pass --agent <NAME> or set ROOM_AGENT=<NAME> (see `room doctor`)")
+        anyhow!("cannot determine which agent is calling: pass --agent <NAME> or set COWORK_AGENT=<NAME> (see `cowork doctor`)")
     })
 }
 

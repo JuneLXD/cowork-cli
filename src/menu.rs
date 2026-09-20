@@ -1,4 +1,4 @@
-//! Interactive prompts for bare `room` on a terminal. This is the human surface:
+//! Interactive prompts for bare `cowork` on a terminal. This is the human surface:
 //! arrow keys to move, Enter to select, Esc to go back. Agents use the flags.
 
 use crate::cli::{DaemonCmd, PostArgs, ReadArgs};
@@ -109,7 +109,7 @@ fn setup_menu() -> Result<bool> {
     let cwd = std::env::current_dir()?;
     let git = paths::find_git_root(&cwd);
     println!();
-    println!("room-cli is not set up here.");
+    println!("cowork is not set up here.");
     match &git {
         Some(r) => println!("git repository: {}", r.display()),
         None => println!("no git repository found above {}", cwd.display()),
@@ -130,7 +130,7 @@ fn setup_menu() -> Result<bool> {
         "init-nogit" => report(commands::init(None, true, false)),
         "explain" => {
             println!();
-            println!("`room init` will:");
+            println!("`cowork init` will:");
             println!("  1. create .ai-common/rooms/main.md, the shared log, plus PROTOCOL.md");
             println!("  2. add a marked rules block to CLAUDE.md and AGENTS.md so each tool knows the protocol");
             println!("  3. add .ai-common/.cursors/ to .gitignore (per-agent read positions)");
@@ -296,7 +296,7 @@ fn room_menu(p: &Project, cfg: &config::Config, room: &str) -> Result<()> {
             }
             "delete" => {
                 if room == "main" {
-                    println!("`main` is the default room and cannot be deleted. Use `room archive --room main` to clear it.");
+                    println!("`main` is the default room and cannot be deleted. Use `cowork archive --room main` to clear it.");
                     continue;
                 }
                 report(commands::delete_room(room, false));

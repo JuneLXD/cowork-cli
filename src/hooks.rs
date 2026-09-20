@@ -15,7 +15,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const MARK: &str = "room hook ";
+const MARK: &str = "cowork hook ";
+/// The command prefix written before the tool was renamed; still recognised so
+/// install and remove replace those entries instead of leaving duplicates.
+const LEGACY_MARK: &str = "room hook ";
 
 // ---------- unread across rooms ----------
 
@@ -132,7 +135,7 @@ pub fn stop(agent_flag: Option<&str>, timeout: Option<u64>) -> Result<()> {
             let reason = format!(
                 "New room messages arrived for you (`{me}`). Handle them before stopping.\n\n{}\
                  What to do now: read the files they mention if needed, then answer in the same room with \
-                 `room post --room {} --thoughts \"...\" [--action ...] [--taken ...] [--handoff ...] [--vote \"approve: ...\"|\"reject: ...\"]`. \
+                 `cowork post --room {} --thoughts \"...\" [--action ...] [--taken ...] [--handoff ...] [--vote \"approve: ...\"|\"reject: ...\"]`. \
                  If a plan was proposed to you, vote on it. If work was requested and you are the executor, do it and report in --taken. \
                  When nothing is pending, you may stop; the room keeps listening for you.",
                 render_unread(&project, &unread),
@@ -180,7 +183,7 @@ pub fn session(agent_flag: Option<&str>) -> Result<()> {
     let parts = agent::participants(&cfg);
     let other = agent::counterpart(&me, &parts);
     let mut lines = vec![format!(
-        "room-cli: you are `{me}` in project `{}`, coordinating with `{other}` through the `room` CLI. Hooks deliver new room messages to you automatically when you finish a turn and before each user prompt. Rules: `{}`.",
+        "cowork: you are `{me}` in project `{}`, coordinating with `{other}` through the `cowork` CLI. Hooks deliver new room messages to you automatically when you finish a turn and before each user prompt. Rules: `{}`.",
         project.name,
         crate::templates::rules_file(&me)
     )];
@@ -211,7 +214,7 @@ pub fn session(agent_flag: Option<&str>) -> Result<()> {
         lines.push(l);
     }
     lines.push(format!(
-        "Start with `room read --room <room>` for any room with unread messages. Role prompt: `room prompt {me} --room <room>`."
+        "Start with `cowork read --room <room>` for any room with unread messages. Role prompt: `cowork prompt {me} --room <room>`."
     ));
     emit(json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": lines.join("\n")}}));
     Ok(())
@@ -245,11 +248,33 @@ fn group(cmd: &str, timeout: u64) -> Value {
     json!({"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]})
 }
 
-fn is_ours(group: &Value) -> bool {
-    group["hooks"]
-        .as_array()
-        .map(|hs| hs.iter().any(|h| h["command"].as_str().map(|c| c.starts_with(MARK)).unwrap_or(false)))
+fn is_our_entry(h: &Value) -> bool {
+    h["command"]
+        .as_str()
+        .map(|c| c.starts_with(MARK) || c.starts_with(LEGACY_MARK))
         .unwrap_or(false)
+}
+
+fn is_ours(group: &Value) -> bool {
+    group["hooks"].as_array().map(|hs| hs.iter().any(is_our_entry)).unwrap_or(false)
+}
+
+/// Remove our entries from every group of an event's array, keeping unrelated
+/// entries and each group's other keys (matchers and the like). A group is
+/// dropped only when nothing is left in it.
+fn strip_ours(arr: Vec<Value>) -> Vec<Value> {
+    arr.into_iter()
+        .filter_map(|mut g| {
+            let Some(hs) = g["hooks"].as_array().cloned() else { return Some(g) };
+            let kept: Vec<Value> = hs.into_iter().filter(|h| !is_our_entry(h)).collect();
+            if kept.is_empty() {
+                None
+            } else {
+                g["hooks"] = Value::Array(kept);
+                Some(g)
+            }
+        })
+        .collect()
 }
 
 fn load_json(path: &Path) -> Result<Value> {
@@ -286,8 +311,7 @@ pub fn install_for(root: &Path, tool: &str, agent_name: &str) -> Result<PathBuf>
         ("SessionStart", format!("{MARK}session --agent {agent_name}"), 20),
     ];
     for (event, cmd, timeout) in wanted {
-        let mut arr: Vec<Value> = hooks[event].as_array().cloned().unwrap_or_default();
-        arr.retain(|g| !is_ours(g));
+        let mut arr: Vec<Value> = strip_ours(hooks[event].as_array().cloned().unwrap_or_default());
         arr.push(group(&cmd, timeout));
         hooks[event] = Value::Array(arr);
     }
@@ -306,8 +330,7 @@ pub fn remove_for(root: &Path, tool: &str) -> Result<Option<PathBuf>> {
     let mut hooks = Value::Object(hooks);
     let events: Vec<String> = hooks.as_object().unwrap().keys().cloned().collect();
     for event in events {
-        let mut arr: Vec<Value> = hooks[event.as_str()].as_array().cloned().unwrap_or_default();
-        arr.retain(|g| !is_ours(g));
+        let arr: Vec<Value> = strip_ours(hooks[event.as_str()].as_array().cloned().unwrap_or_default());
         if arr.is_empty() {
             hooks.as_object_mut().unwrap().remove(&event);
         } else {
@@ -352,7 +375,7 @@ pub fn install(tool: Option<&str>) -> Result<()> {
 
 pub fn print_trust_notes(tools: &[String]) {
     if tools.iter().any(|t| t == "codex") {
-        println!("  codex: hooks run only after you trust them once. In Codex, type /hooks and trust the three `room hook` entries.");
+        println!("  codex: hooks run only after you trust them once. In Codex, type /hooks and trust the three `cowork hook` entries.");
     }
     if tools.iter().any(|t| t == "claude") {
         println!("  claude: project hooks load on the next session start; run /hooks inside Claude Code to see them.");

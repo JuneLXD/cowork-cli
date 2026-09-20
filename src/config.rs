@@ -22,7 +22,7 @@ pub struct Config {
     /// Max consecutive continues a Stop hook may force in one session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hook_max_continues: Option<u64>,
-    /// Override for where `room feedback` sends reports (a Supabase project URL).
+    /// Override for where `cowork feedback` sends reports (a Supabase project URL).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub feedback_url: Option<String>,
     /// The publishable (insert-only) key for that endpoint.

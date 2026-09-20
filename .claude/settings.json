@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "room hook session --agent claude",
+            "command": "cowork hook session --agent claude",
             "timeout": 20,
             "type": "command"
           }
@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "room hook stop --agent claude",
+            "command": "cowork hook stop --agent claude",
             "timeout": 150,
             "type": "command"
           }
@@ -26,7 +26,7 @@
       {
         "hooks": [
           {
-            "command": "room hook prompt --agent claude",
+            "command": "cowork hook prompt --agent claude",
             "timeout": 20,
             "type": "command"
           }

@@ -98,7 +98,7 @@ fn summary_of(m: &Message) -> String {
 }
 
 /// The executor of a room, falling back to the first participant for rooms whose
-/// front matter predates roles (the same rule `room prompt` uses).
+/// front matter predates roles (the same rule `cowork prompt` uses).
 pub fn executor_of(rf: &RoomFile, participants: &[String]) -> String {
     rf.front
         .as_ref()
@@ -205,7 +205,7 @@ pub fn analyze(rf: &RoomFile, participants: &[String]) -> Analysis {
 }
 
 /// Ids of messages that belong to an unresolved proposal thread: the proposal
-/// itself and every message that replies to it. `room archive` keeps these.
+/// itself and every message that replies to it. `cowork archive` keeps these.
 pub fn live_thread_ids(rf: &RoomFile, participants: &[String]) -> Vec<u64> {
     let a = analyze(rf, participants);
     let open: Vec<u64> = a.open().map(|p| p.id).collect();

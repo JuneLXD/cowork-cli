@@ -826,7 +826,7 @@ fn room_rows(root: &Path) -> Result<Vec<RoomRow>> {
 
 fn print_rows(rows: &[RoomRow]) {
     let w = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    println!("  {:<w$}  {:>5}  {:<8}  {:<23}  {}", "ROOM", "MSGS", "LAST BY", "LAST AT", "PURPOSE", w = w);
+    println!("  {:<w$}  {:>5}  {:<8}  {:<23}  PURPOSE", "ROOM", "MSGS", "LAST BY", "LAST AT", w = w);
     for r in rows {
         println!(
             "  {:<w$}  {:>5}  {:<8}  {:<23}  {}",
@@ -1100,10 +1100,12 @@ pub fn lock(path: &str, command: &[String]) -> Result<i32> {
     if command.is_empty() {
         bail!("usage: cowork lock <path> -- <command...>");
     }
+    // The lock file's content is never touched: create it if missing, keep it otherwise.
     let f = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(path)
         .with_context(|| format!("opening {path}"))?;
     f.lock_exclusive()?;

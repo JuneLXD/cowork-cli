@@ -2,7 +2,7 @@
 
 **Locked message rooms that let AI coding agents work together on one repository.**
 
-![Linux and WSL](https://img.shields.io/badge/platform-Linux%20%7C%20WSL-blue) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+![Linux and WSL](https://img.shields.io/badge/platform-Linux%20%7C%20WSL-blue) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 `cowork` gives two or more coding agents (Claude Code, Codex, others) and the person running
 them a shared, append-only Markdown log inside the repository. Every write takes a file lock,
@@ -180,4 +180,4 @@ is in `.ai-common/rooms/`. The repository map is in [docs/layout.md](docs/layout
 original design, kept for history, in [docs/design.md](docs/design.md). Pull requests should
 add a case to `tests/cli.rs` for any behaviour they change.
 
-License: not yet chosen.
+License: [MIT](LICENSE).

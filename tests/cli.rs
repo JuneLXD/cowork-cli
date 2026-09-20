@@ -673,7 +673,7 @@ fn status_json(p: &Project) -> serde_json::Value {
     v[0].clone()
 }
 
-fn proposal<'a>(s: &'a serde_json::Value, id: u64) -> &'a serde_json::Value {
+fn proposal(s: &serde_json::Value, id: u64) -> &serde_json::Value {
     s["proposals"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap()
 }
 
@@ -1070,4 +1070,91 @@ fn hook_upgrade_keeps_unrelated_entries_in_a_mixed_group() {
     p.ok("claude", &["hook", "remove", "--tool", "claude"]);
     let text = fs::read_to_string(&f).unwrap();
     assert!(!text.contains("hook stop") && text.contains("say done") && text.contains("lint"), "{text}");
+}
+
+// ---------- feedback hardening ----------
+
+#[test]
+fn queued_reports_are_owner_only_even_in_an_existing_open_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let p = Project::new("fb-perms");
+    let dir = p.root.join("xdg-data/room/feedback-queue");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let (down, _) = mock_server(500, "", 0, 1);
+    assert_eq!(feedback(&p, &down, &["bug", "kept private"], None).status.code(), Some(3));
+    assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700, "existing directory tightened");
+    for f in queue_files(&p) {
+        assert_eq!(fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600, "{}", f.display());
+    }
+}
+
+#[test]
+fn plaintext_http_is_refused_except_to_loopback() {
+    let p = Project::new("fb-http");
+    for bad in ["http://example.com/x", "http://127.0.0.1.evil.example/x", "http://localhost.example/x", "ftp://127.0.0.1/x", "https://"] {
+        let out = feedback(&p, bad, &["bug", "x"], None);
+        assert!(!out.status.success(), "{bad} must be refused");
+        assert!(queue_files(&p).is_empty(), "{bad}: nothing queued");
+    }
+    // Loopback over plain http (the mock servers) still works, as the other tests show.
+    let (url, seen) = mock_server(201, "", 0, 1);
+    assert!(feedback(&p, &url, &["bug", "local"], None).status.success());
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn retry_refuses_a_queued_report_whose_recorded_url_is_unsafe() {
+    let p = Project::new("fb-retry-url");
+    let (down, _) = mock_server(500, "", 0, 1);
+    assert_eq!(feedback(&p, &down, &["bug", "later"], None).status.code(), Some(3));
+    let f = &queue_files(&p)[0];
+    let mut q: serde_json::Value = serde_json::from_str(&fs::read_to_string(f).unwrap()).unwrap();
+    q["url"] = serde_json::Value::String("http://example.com".into());
+    fs::write(f, q.to_string()).unwrap();
+    let (good, seen) = mock_server(201, "", 0, 1);
+    let out = feedback(&p, &good, &["retry"], None);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("not sent"), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(queue_files(&p).len(), 1, "kept untouched");
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn redirects_are_not_followed() {
+    let p = Project::new("fb-redirect");
+    let (target, target_seen) = mock_server(201, "", 0, 1);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redirect_url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            let resp = format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {target}/rest/v1/feedback\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let out = feedback(&p, &redirect_url, &["bug", "do not follow"], None);
+    assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("HTTP 307"));
+    assert!(target_seen.lock().unwrap().is_empty(), "redirect target never contacted");
+    assert_eq!(queue_files(&p).len(), 1);
+}
+
+#[test]
+fn concurrent_first_failures_all_enqueue() {
+    let p = Project::new("fb-race");
+    let (down, _) = mock_server(500, "", 0, 8);
+    let mut children = Vec::new();
+    for i in 0..8 {
+        let mut c = p.cmd("codex");
+        c.env("COWORK_FEEDBACK_URL", &down).env("COWORK_FEEDBACK_KEY", "sb_publishable_test").env("COWORK_FEEDBACK_TIMEOUT", "2");
+        c.args(["feedback", "bug", &format!("race {i}")]).stdout(Stdio::piped()).stderr(Stdio::piped());
+        children.push(c.spawn().unwrap());
+    }
+    for c in children {
+        let out = c.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    assert_eq!(queue_files(&p).len(), 8, "every failed report was queued");
 }

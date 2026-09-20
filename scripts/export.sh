@@ -17,6 +17,7 @@ rm -rf "$out" "export/$name.tar.gz"
 mkdir -p "$out"
 install -m 755 target/release/cowork "$out/cowork"
 install -m 755 target/release/room "$out/room"
+install -m 644 LICENSE "$out/LICENSE"
 
 cat > "$out/install.sh" <<'INSTALL'
 #!/bin/sh
@@ -63,6 +64,7 @@ Contents
   cowork       the CLI
   room         the same program under its previous name (alias)
   install.sh   copies both into ~/.local/bin (or /usr/local/bin with --system)
+  LICENSE      MIT
   SHA256SUMS   checksums of the binaries
 
 Install

@@ -3,6 +3,13 @@ name = "cowork"
 version = "0.1.0"
 edition = "2021"
 description = "cowork: locked message rooms that let AI coding agents work together on one repository"
+repository = "https://github.com/JuneLXD/room-cli"
+license = "MIT"
+readme = "README.md"
+keywords = ["ai", "agents", "coordination", "cli", "claude-code"]
+categories = ["command-line-utilities", "development-tools"]
+# Runtime and editor-local files never belong in a published crate.
+exclude = [".ai-common/", ".claude/", ".codex/", "history/", "export/", ".env", ".env.*", "AGENTS.md", "CLAUDE.md"]
 
 [[bin]]
 name = "cowork"

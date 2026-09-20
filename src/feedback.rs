@@ -56,6 +56,34 @@ pub struct Endpoint {
 
 pub const KEY_PREFIX: &str = "sb_publishable_";
 
+/// Reports carry free text, so they travel only over TLS. Plain `http://` is
+/// allowed solely to a loopback host (tests and local mocks), matched exactly
+/// after parsing the URL, not by string prefix.
+pub fn check_url(url: &str) -> Result<()> {
+    let uri: ureq::http::Uri = url
+        .parse()
+        .map_err(|e| anyhow!("feedback url `{url}` is not a valid URL: {e}"))?;
+    let scheme = uri.scheme_str().unwrap_or("");
+    let host = uri.host().unwrap_or("").trim_matches(|c| c == '[' || c == ']');
+    if host.is_empty() {
+        bail!("feedback url `{url}` has no host");
+    }
+    match scheme {
+        "https" => Ok(()),
+        "http" => {
+            let loopback = host.eq_ignore_ascii_case("localhost")
+                || host.parse::<std::net::Ipv4Addr>().map(|a| a.is_loopback()).unwrap_or(false)
+                || host.parse::<std::net::Ipv6Addr>().map(|a| a.is_loopback()).unwrap_or(false);
+            if loopback {
+                Ok(())
+            } else {
+                bail!("feedback url `{url}` uses plain http to a non-local host; reports are sent over https only")
+            }
+        }
+        _ => bail!("feedback url `{url}` must use https://"),
+    }
+}
+
 /// Where reports go: environment, then the project's room.toml, then the values
 /// baked in at build time. A source that sets only the url or only the key is an
 /// error, never a fallback, so a half-configured override cannot send reports
@@ -88,9 +116,7 @@ pub fn endpoint() -> Result<Option<Endpoint>> {
         match (url, key) {
             (None, None) => continue,
             (Some(url), Some(key)) => {
-                if !(url.starts_with("https://") || url.starts_with("http://")) {
-                    bail!("feedback url from {source} must start with https:// (got `{url}`)");
-                }
+                check_url(&url).map_err(|e| anyhow!("{e} (from {source})"))?;
                 if !key.starts_with(KEY_PREFIX) {
                     bail!("feedback key from {source} is not a publishable key (expected a value starting with {KEY_PREFIX}); server-side keys are refused");
                 }
@@ -189,8 +215,11 @@ enum Outcome {
 }
 
 fn send(url: &str, key: &str, report: &Report) -> Outcome {
+    // Redirects are refused: the destination was validated once, and a redirect
+    // could send the report somewhere else, possibly over plain http.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .max_redirects(0)
         .timeout_global(Some(timeout()))
         .build()
         .into();
@@ -227,21 +256,47 @@ fn is_duplicate_of_this_report(body: &str) -> bool {
     code == "23505" && text.contains("feedback_pkey")
 }
 
-fn enqueue(url: &str, key: &str, report: &Report) -> Result<PathBuf> {
+/// The queue holds report text and the endpoint key: owner-only, and an existing
+/// directory is tightened as well, not only a freshly created one.
+fn private_queue_dir() -> Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     let dir = queue_dir();
-    fs::create_dir_all(&dir)?;
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Two first-time failures can race here: a concurrent create is fine as long
+    // as what exists is a directory. Any other error is reported.
+    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+        Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
+    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
+}
+
+fn enqueue(url: &str, key: &str, report: &Report) -> Result<PathBuf> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = private_queue_dir()?;
     let p = dir.join(format!("{}.json", report.id));
     let q = Queued { url: url.to_string(), key: key.to_string(), report: report.clone() };
-    fs::write(&p, serde_json::to_string_pretty(&q)?)?;
+    let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p)?;
+    f.write_all(serde_json::to_string_pretty(&q)?.as_bytes())?;
     Ok(p)
 }
 
-/// Readable queued reports, plus the paths of files in the queue that could not
-/// be parsed (they are reported, never silently ignored or deleted).
-fn queued() -> Result<(Vec<(PathBuf, Queued)>, Vec<PathBuf>)> {
+/// Readable queued reports with their paths, plus the paths of files in the queue
+/// that could not be parsed (they are reported, never silently ignored or deleted).
+type Queue = (Vec<(PathBuf, Queued)>, Vec<PathBuf>);
+
+fn queued() -> Result<Queue> {
     let dir = queue_dir();
     let mut out = Vec::new();
     let mut bad = Vec::new();
+    if dir.is_dir() {
+        private_queue_dir()?;
+    }
     let Ok(rd) = fs::read_dir(&dir) else { return Ok((out, bad)) };
     for e in rd.flatten() {
         let p = e.path();
@@ -340,6 +395,15 @@ fn retry() -> Result<i32> {
     }
     let mut left = 0;
     for (path, q) in items {
+        // The recorded destination is checked again; a report whose url no longer
+        // passes is kept untouched and never sent.
+        if let Err(e) = check_url(&q.url).and_then(|_| {
+            if q.key.starts_with(KEY_PREFIX) { Ok(()) } else { bail!("recorded key is not a publishable key") }
+        }) {
+            left += 1;
+            println!("still queued {} report {} (not sent: {e})", q.report.kind, q.report.id);
+            continue;
+        }
         match send(&q.url, &q.key, &q.report) {
             Outcome::Sent | Outcome::Duplicate => {
                 fs::remove_file(&path)?;

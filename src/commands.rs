@@ -15,7 +15,15 @@ use std::time::{Duration, Instant};
 
 // ---------- init ----------
 
-pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
+fn choose_agent_files(choice: Option<bool>, default: bool) -> Result<Option<bool>> {
+    match choice {
+        Some(value) => Ok(Some(value)),
+        None if crate::menu::interactive() => crate::menu::agent_files(default),
+        None => Ok(Some(default)),
+    }
+}
+
+pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Option<bool>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let root = match paths::find_git_root(&cwd) {
         Some(r) => r,
@@ -33,6 +41,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
             cwd.display()
         ),
     };
+    let Some(agent_files) = choose_agent_files(agent_files, true)? else { return Ok(()) };
     if let Some(a) = agents {
         let list = config::parse_agents(&a);
         if list.len() < 2 {
@@ -72,35 +81,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
         created.push(".ai-common/PROTOCOL.md");
     }
 
-    // Rules blocks: one file per tool, shared by every agent that maps to it.
-    let mut by_file: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
-    for a in &participants {
-        by_file
-            .entry(templates::rules_file(a))
-            .or_default()
-            .push(a.clone());
-    }
-    let mut updated = Vec::new();
-    for (file, agents_here) in &by_file {
-        let block = if agents_here.len() == 1 {
-            let a = &agents_here[0];
-            templates::rules(&root, a, &agent::counterpart(a, &participants), &project.name)
-        } else {
-            let names = agents_here
-                .iter()
-                .map(|a| format!("`{a}`"))
-                .collect::<Vec<_>>()
-                .join(" or ");
-            templates::rules(
-                &root,
-                &format!("{names} (set COWORK_AGENT to your name)"),
-                "the other agents",
-                &project.name,
-            )
-        };
-        templates::upsert_block(&root.join(file), &block)?;
-        updated.push(*file);
-    }
+    let updated = if agent_files { write_agent_files(&project, &participants)? } else { Vec::new() };
 
     gitignore_add(&root, ".ai-common/.cursors/")?;
     registry::register(&project.name, &root)?;
@@ -125,8 +106,8 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
         let k = templates::kickoff(&root, a, &other, &project.name);
         onboarding.push_str(&format!("## {a}\n\n```\n{k}\n```\n\n"));
         printed.push_str(&format!(
-            "── prompt for {a} (paste into its session; rules already in {}) ──\n{k}\n\n",
-            templates::rules_file(a)
+            "── prompt for {a} (paste into its session; rules: {}) ──\n{k}\n\n",
+            templates::rules_source(&root, a)
         ));
     }
     fs::write(paths::onboarding_path(&root), &onboarding)?;
@@ -135,7 +116,11 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
     if !created.is_empty() {
         println!("  created: {}", created.join(", "));
     }
-    println!("  rules blocks: {}", updated.join(", "));
+    if agent_files {
+        println!("  rules blocks: {}", updated.join(", "));
+    } else {
+        println!("  agent files: skipped (existing files left untouched)");
+    }
     if !hooked.is_empty() {
         let files: Vec<String> = hooked
             .iter()
@@ -151,6 +136,32 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
         println!("next: open each tool in this directory, paste its prompt, and let them talk.");
     }
     Ok(())
+}
+
+/// One rules block per tool file, shared by all participants that map to it.
+fn write_agent_files(project: &Project, participants: &[String]) -> Result<Vec<&'static str>> {
+    let mut by_file: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+    for a in participants {
+        by_file.entry(templates::rules_file(a)).or_default().push(a.clone());
+    }
+    let mut updated = Vec::new();
+    for (file, agents_here) in &by_file {
+        let block = if agents_here.len() == 1 {
+            let a = &agents_here[0];
+            templates::rules(&project.root, a, &agent::counterpart(a, participants), &project.name)
+        } else {
+            let names = agents_here.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(" or ");
+            templates::rules(
+                &project.root,
+                &format!("{names} (set COWORK_AGENT to your name)"),
+                "the other agents",
+                &project.name,
+            )
+        };
+        templates::upsert_block(&project.root.join(file), &block)?;
+        updated.push(*file);
+    }
+    Ok(updated)
 }
 
 fn gitignore_add(root: &Path, entry: &str) -> Result<()> {
@@ -593,7 +604,7 @@ pub fn wait(a: WaitArgs) -> Result<i32> {
 
 // ---------- new / list / status ----------
 
-pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>) -> Result<()> {
+pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>, agent_files: Option<bool>) -> Result<()> {
     let project = paths::current_project()?;
     paths::ensure_initialized(&project)?;
     paths::validate_room_name(name)?;
@@ -610,6 +621,11 @@ pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>) -
         }
         None => participants[0].clone(),
     };
+    let Some(agent_files) = choose_agent_files(agent_files, false)? else { return Ok(()) };
+    if agent_files {
+        let updated = write_agent_files(&project, &participants)?;
+        println!("  rules blocks: {}", updated.join(", "));
+    }
     let fm = FrontMatter {
         room: name.to_string(),
         project: project.name.clone(),
@@ -1039,7 +1055,7 @@ pub fn home() -> Result<()> {
         }
         _ => {
             println!("cowork is not set up here.");
-            println!("Run `cowork init` inside a git repository to create .ai-common/, write the rules blocks, and print the prompts for each agent.");
+            println!("Run `cowork init` inside a git repository to create .ai-common/, choose whether to write agent files, and print the prompts for each agent.");
         }
     }
     Ok(())
@@ -1299,7 +1315,7 @@ pub fn doctor() -> Result<()> {
                 for a in agent::participants(&cfg) {
                     let f = p.root.join(templates::rules_file(&a));
                     let has = fs::read_to_string(&f).map(|s| s.contains(templates::START) || s.contains(templates::LEGACY_START)).unwrap_or(false);
-                    line(has, false, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("rules block for {a} missing from {}; run `cowork init`", templates::rules_file(&a)) });
+                    line(has, true, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("optional rules block for {a} absent from {}; using .ai-common/PROTOCOL.md (add with `cowork init --agent-files`)", templates::rules_file(&a)) });
                 }
                 for t in ["claude", "codex"] {
                     if agent::participants(&cfg).iter().any(|a| a == t) {

@@ -22,11 +22,11 @@ use cli::{Cli, Cmd, HookCmd};
 fn run(cli: Cli) -> Result<i32> {
     match cli.cmd {
         None => commands::home().map(|_| 0),
-        Some(Cmd::Init { agents, no_git, quiet }) => commands::init(agents, no_git, quiet).map(|_| 0),
+        Some(Cmd::Init { agents, no_git, quiet, agent_files }) => commands::init(agents, no_git, quiet, agent_files.choice()).map(|_| 0),
         Some(Cmd::Post(a)) => commands::post(a).map(|_| 0),
         Some(Cmd::Read(a)) => commands::read(a).map(|_| 0),
         Some(Cmd::Wait(a)) => commands::wait(a),
-        Some(Cmd::New { name, purpose, executor }) => commands::new_room(&name, purpose, executor).map(|_| 0),
+        Some(Cmd::New { name, purpose, executor, agent_files }) => commands::new_room(&name, purpose, executor, agent_files.choice()).map(|_| 0),
         Some(Cmd::Delete { name, yes }) => commands::delete_room(&name, yes).map(|_| 0),
         Some(Cmd::Stream { room, last, json }) => commands::stream(room, last, json).map(|_| 0),
         Some(Cmd::List { all }) => commands::list(all).map(|_| 0),

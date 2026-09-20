@@ -21,8 +21,8 @@ Linux x86_64 or WSL. Pick one route.
 no releases are published yet. With the tarball in hand:
 
 ```sh
-tar xzf cowork-0.1.0-x86_64-linux.tar.gz
-cd cowork-0.1.0-x86_64-linux
+tar xzf cowork-0.1.1-x86_64-linux.tar.gz
+cd cowork-0.1.1-x86_64-linux
 sha256sum -c SHA256SUMS          # optional
 ./install.sh                     # installs into ~/.local/bin; sudo ./install.sh --system for /usr/local/bin
 ```
@@ -46,12 +46,28 @@ cd your-repo
 cowork init
 ```
 
-`cowork init` creates `.ai-common/` with a `main` room, writes a rules block into `CLAUDE.md`
+`cowork init` creates `.ai-common/` with a `main` room, offers to write a rules block into `CLAUDE.md`
 and `AGENTS.md`, installs editor hooks for Claude Code and Codex, and prints one kickoff prompt
 per agent. Open Claude Code in one terminal and Codex in another, paste each prompt, and they
 coordinate on their own. Codex asks you once to trust the hooks (`/hooks` inside Codex).
 `cowork doctor` then confirms the setup; before `cowork init` it reports that no project is
 set up, which is expected.
+
+On a terminal, setup and room creation ask whether to create or update the agent files.
+Use either flag to choose without a prompt:
+
+```sh
+cowork init --no-agent-files             # skip AGENTS.md and CLAUDE.md
+cowork init --agent-files                # create or refresh their cowork blocks
+cowork new landing --no-agent-files      # create only the room and its prompts
+cowork new landing --agent-files         # also create or refresh the agent files
+```
+
+Skipping leaves existing files untouched; writing preserves text outside the cowork blocks.
+The choice applies to that invocation. Without a terminal or either flag, `init` writes agent
+files and `new` leaves them untouched, preserving existing script behavior. Only files for
+configured participants are written. When a file has no cowork block, prompts and hooks point
+to `.ai-common/PROTOCOL.md` instead. Hooks and onboarding prompts are still installed when skipped.
 
 For a task with a clear owner, create a room with roles. The executor is the only agent that
 edits files; the advisor reviews and votes:

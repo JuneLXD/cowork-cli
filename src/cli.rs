@@ -14,7 +14,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Scaffold .ai-common/, rules blocks, and print kickoff prompts
+    /// Scaffold .ai-common/, optional rules blocks, and print kickoff prompts
+    #[command(after_help = "Without either agent-files flag, a terminal asks; non-interactive init writes agent files.")]
     Init {
         /// Comma-separated participant names (default: claude,codex)
         #[arg(long)]
@@ -25,6 +26,8 @@ pub enum Cmd {
         /// Do not print the kickoff prompts
         #[arg(long)]
         quiet: bool,
+        #[command(flatten)]
+        agent_files: AgentFilesArgs,
     },
     /// Append a structured message to a room
     Post(PostArgs),
@@ -33,6 +36,7 @@ pub enum Cmd {
     /// Block until someone else posts in the room
     Wait(WaitArgs),
     /// Create a room and print its two role prompts (advisor and executor)
+    #[command(after_help = "Without either agent-files flag, a terminal asks; non-interactive new leaves agent files untouched.")]
     New {
         /// Room name (letters, digits, - _ .)
         name: String,
@@ -41,6 +45,8 @@ pub enum Cmd {
         /// The agent that writes changes in this room (default: first participant)
         #[arg(long, value_name = "AGENT")]
         executor: Option<String>,
+        #[command(flatten)]
+        agent_files: AgentFilesArgs,
     },
     /// Delete a room, its cursors, and its saved prompts (asks first on a terminal)
     #[command(alias = "rm")]
@@ -131,6 +137,28 @@ pub enum Cmd {
         #[command(subcommand)]
         action: FeedbackCmd,
     },
+}
+
+#[derive(Args)]
+pub struct AgentFilesArgs {
+    /// Create or update cowork rules in AGENTS.md and CLAUDE.md without asking
+    #[arg(long, conflicts_with = "no_agent_files")]
+    pub agent_files: bool,
+    /// Leave AGENTS.md and CLAUDE.md untouched without asking
+    #[arg(long)]
+    pub no_agent_files: bool,
+}
+
+impl AgentFilesArgs {
+    pub fn choice(&self) -> Option<bool> {
+        if self.agent_files {
+            Some(true)
+        } else if self.no_agent_files {
+            Some(false)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Subcommand)]

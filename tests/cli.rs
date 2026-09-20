@@ -20,13 +20,7 @@ impl Project {
     }
 
     fn with_agents(name: &str, agents: Option<&str>) -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("room-cli-test-{}-{}-{}", std::process::id(), n, name));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(root.join("xdg-data")).unwrap();
-        fs::create_dir_all(root.join("xdg-run")).unwrap();
-        let p = Project { root };
+        let p = Self::uninitialized(name);
         let mut args = vec!["init", "--quiet"];
         if let Some(a) = agents {
             args.extend(["--agents", a]);
@@ -34,6 +28,16 @@ impl Project {
         let out = p.run("claude", &args, None);
         assert!(out.status.success(), "init failed: {}", String::from_utf8_lossy(&out.stderr));
         p
+    }
+
+    fn uninitialized(name: &str) -> Self {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!("room-cli-test-{}-{}-{}", std::process::id(), n, name));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("xdg-data")).unwrap();
+        fs::create_dir_all(root.join("xdg-run")).unwrap();
+        Project { root }
     }
 
     fn cmd(&self, agent: &str) -> Command {
@@ -1050,6 +1054,104 @@ fn init_keeps_a_customized_protocol_file() {
     fs::write(&f, &text).unwrap();
     p.ok("claude", &["init", "--quiet"]);
     assert_eq!(fs::read_to_string(&f).unwrap(), text, "init is create-only for PROTOCOL.md");
+}
+
+#[test]
+fn init_can_skip_agent_files_and_use_the_shared_protocol() {
+    let p = Project::uninitialized("skip-agent-files");
+    let out = p.ok("claude", &["init", "--no-agent-files"]);
+    assert!(out.contains("agent files: skipped"), "{out}");
+    assert!(!out.contains("rules already in"), "{out}");
+    for file in ["AGENTS.md", "CLAUDE.md"] {
+        assert!(!p.root.join(file).exists(), "{file} must not be created");
+    }
+    for file in [".ai-common/rooms/main.md", ".ai-common/PROTOCOL.md", ".ai-common/ONBOARDING.md", ".claude/settings.json", ".codex/hooks.json"] {
+        assert!(p.root.join(file).is_file(), "{file} must still be created");
+    }
+    let onboarding = fs::read_to_string(p.root.join(".ai-common/ONBOARDING.md")).unwrap();
+    assert!(onboarding.contains("Follow the cowork rules in `.ai-common/PROTOCOL.md`"), "{onboarding}");
+    for agent in ["claude", "codex"] {
+        let prompt = p.ok(agent, &["prompt", agent]);
+        assert!(prompt.contains("Follow the cowork rules in `.ai-common/PROTOCOL.md`"), "{prompt}");
+        let hook = p.ok(agent, &["hook", "session", "--agent", agent]);
+        assert!(hook.contains("Rules: `.ai-common/PROTOCOL.md`"), "{hook}");
+    }
+    let doctor = p.ok("claude", &["doctor"]);
+    assert!(doctor.contains("[info] optional rules block"), "{doctor}");
+    assert!(!doctor.lines().any(|l| l.contains("[warn]") && l.contains("rules block")), "{doctor}");
+}
+
+#[test]
+fn skipping_agent_files_preserves_custom_text_and_existing_blocks() {
+    let p = Project::uninitialized("keep-agent-files");
+    let custom = "# My project instructions\nKeep this exactly.\n";
+    for file in ["AGENTS.md", "CLAUDE.md"] {
+        fs::write(p.root.join(file), custom).unwrap();
+    }
+    p.ok("claude", &["init", "--no-agent-files", "--quiet"]);
+    p.ok("claude", &["new", "custom", "--no-agent-files"]);
+    for file in ["AGENTS.md", "CLAUDE.md"] {
+        assert_eq!(fs::read_to_string(p.root.join(file)).unwrap(), custom);
+    }
+    assert!(p.ok("claude", &["prompt", "claude"]).contains("`.ai-common/PROTOCOL.md`"));
+    p.ok("claude", &["init", "--agent-files", "--quiet"]);
+    let before: Vec<_> = ["AGENTS.md", "CLAUDE.md"].iter().map(|f| fs::read(p.root.join(f)).unwrap()).collect();
+    p.ok("claude", &["init", "--no-agent-files", "--quiet"]);
+    p.ok("claude", &["new", "existing", "--no-agent-files"]);
+    for (file, content) in ["AGENTS.md", "CLAUDE.md"].iter().zip(before) {
+        assert_eq!(fs::read(p.root.join(file)).unwrap(), content);
+    }
+}
+
+#[test]
+fn new_room_can_create_agent_files_after_skipping_setup() {
+    let p = Project::uninitialized("room-agent-files");
+    p.ok("claude", &["init", "--no-agent-files", "--quiet"]);
+    for args in [vec!["new", "default"], vec!["new", "skipped", "--no-agent-files"]] {
+        let out = p.ok("claude", &args);
+        assert!(out.contains("Project-wide cowork rules are in `.ai-common/PROTOCOL.md`"), "{out}");
+        assert!(!p.root.join("AGENTS.md").exists());
+        assert!(!p.root.join("CLAUDE.md").exists());
+    }
+    let custom = "# Keep my own rules\n";
+    fs::write(p.root.join("AGENTS.md"), custom).unwrap();
+    p.ok("claude", &["new", "with-files", "--agent-files", "--executor", "codex"]);
+    p.ok("claude", &["new", "refresh-files", "--agent-files"]);
+    for file in ["AGENTS.md", "CLAUDE.md"] {
+        let text = fs::read_to_string(p.root.join(file)).unwrap();
+        assert_eq!(text.matches("<!-- cowork:start -->").count(), 1, "{text}");
+        assert_eq!(text.matches("<!-- cowork:end -->").count(), 1, "{text}");
+    }
+    assert!(fs::read_to_string(p.root.join("AGENTS.md")).unwrap().starts_with(custom));
+    let saved = fs::read_to_string(p.root.join(".ai-common/prompts/with-files.md")).unwrap();
+    assert!(saved.contains("Project-wide cowork rules are in `AGENTS.md`"), "{saved}");
+    assert!(saved.contains("Project-wide cowork rules are in `CLAUDE.md`"), "{saved}");
+    assert!(saved.contains("the EXECUTOR in room"), "{saved}");
+}
+
+#[test]
+fn agent_file_flags_conflict_before_any_files_are_written() {
+    let p = Project::uninitialized("agent-files-conflict");
+    let out = p.run("claude", &["init", "--agent-files", "--no-agent-files"], None);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!p.root.join(".ai-common").exists());
+    p.ok("claude", &["init", "--no-agent-files", "--quiet"]);
+    let out = p.run("claude", &["new", "conflict", "--agent-files", "--no-agent-files"], None);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!p.root.join(".ai-common/rooms/conflict.md").exists());
+    assert!(!p.root.join("AGENTS.md").exists());
+    assert!(!p.root.join("CLAUDE.md").exists());
+}
+
+#[test]
+fn agent_file_generation_respects_custom_participants() {
+    let p = Project::uninitialized("custom-agent-files");
+    p.ok("claude", &["init", "--agents", "codex,reviewer", "--no-agent-files", "--quiet"]);
+    p.ok("codex", &["new", "custom", "--agent-files"]);
+    assert!(!p.root.join("CLAUDE.md").exists());
+    let rules = fs::read_to_string(p.root.join("AGENTS.md")).unwrap();
+    assert!(rules.contains("`codex` or `reviewer`"), "{rules}");
+    assert_eq!(rules.matches("<!-- cowork:start -->").count(), 1);
 }
 
 #[test]

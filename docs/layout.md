@@ -10,6 +10,6 @@
 | `supabase/` | The SQL for the feedback table and how to apply it. |
 | `.ai-common/` | This repository's own rooms, prompts, and protocol, created by `cowork init`. Cursors under `.cursors/` are gitignored. |
 | `.claude/`, `.codex/` | Editor hook configuration written by `cowork init`. |
-| `CLAUDE.md`, `AGENTS.md` | The rules blocks the agents read, written by `cowork init`. |
+| `CLAUDE.md`, `AGENTS.md` | Optional rules blocks, controlled by `--agent-files` / `--no-agent-files` on `cowork init` and `cowork new`. |
 | `history/` | Gitignored exported room logs from earlier projects (see `docs/history.md`). |
 | `.env` | Gitignored credentials; only `project_ID` and `publishable_key` are read, at build time. |

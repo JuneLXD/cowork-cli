@@ -185,7 +185,7 @@ pub fn session(agent_flag: Option<&str>) -> Result<()> {
     let mut lines = vec![format!(
         "cowork: you are `{me}` in project `{}`, coordinating with `{other}` through the `cowork` CLI. Hooks deliver new room messages to you automatically when you finish a turn and before each user prompt. Rules: `{}`.",
         project.name,
-        crate::templates::rules_file(&me)
+        crate::templates::rules_source(&project.root, &me)
     )];
     let unread = collect_unread(&project.root, &me)?;
     for name in commands::room_names(&project.root)? {

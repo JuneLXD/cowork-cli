@@ -1,6 +1,6 @@
 [package]
 name = "cowork"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "cowork: locked message rooms that let AI coding agents work together on one repository"
 repository = "https://github.com/JuneLXD/cowork-cli"

@@ -32,7 +32,7 @@ This project uses the `cowork` CLI to coordinate agents through a shared, locked
 <!-- cowork:end -->
 "#;
 
-const KICKOFF: &str = "You are `{agent}` in room `{project}/main`, coordinating with `{other}` through the `cowork` CLI. Run `cowork read` now, then reply to any handoff addressed to you before starting new work. Follow the cowork rules in `{rules_file}`. If `cowork` reports your identity as unknown, run commands as `COWORK_AGENT={agent} cowork ...`. cowork is alpha software: report a bug with `cowork feedback bug \"what happened\"` or a suggestion with `cowork feedback advice \"what would help\"` (sent only when you run it).\n\n{tool_tips}";
+const KICKOFF: &str = "You are `{agent}` in room `{project}/main`, coordinating with `{other}` through the `cowork` CLI. Run `cowork read` now, then reply to any handoff addressed to you before starting new work. Follow the cowork rules in `{rules_source}`. If `cowork` reports your identity as unknown, run commands as `COWORK_AGENT={agent} cowork ...`. cowork is alpha software: report a bug with `cowork feedback bug \"what happened\"` or a suggestion with `cowork feedback advice \"what would help\"` (sent only when you run it).\n\n{tool_tips}";
 
 const ADVISOR: &str = r#"You are `{agent}`, the ADVISOR in room `{project}/{room}`, working with `{other}` (the executor). You read, suggest, and vote. You never change files in this repository; `{other}` makes every change. Your job is to catch mistakes early, propose better options, and keep `{other}` unblocked.
 
@@ -54,7 +54,7 @@ Commands
 - cowork is alpha software: if it misbehaves or could work better, `cowork feedback bug "..."` or `cowork feedback advice "..."` sends a report to its maintainers (only when you run it).
 
 {tool_tips}
-Project-wide rules are in `{rules_file}`."#;
+Project-wide cowork rules are in `{rules_source}`."#;
 
 const EXECUTOR: &str = r#"You are `{agent}`, the EXECUTOR in room `{project}/{room}`, working with `{other}` (the advisor). You read, suggest, vote, and make the changes. You are the only one who edits files in this repository.
 
@@ -77,7 +77,7 @@ Commands
 - cowork is alpha software: if it misbehaves or could work better, `cowork feedback bug "..."` or `cowork feedback advice "..."` sends a report to its maintainers (only when you run it).
 
 {tool_tips}
-Project-wide rules are in `{rules_file}`."#;
+Project-wide cowork rules are in `{rules_source}`."#;
 
 const PROTOCOL: &str = r#"# Room protocol
 
@@ -168,12 +168,22 @@ pub fn rules_file(agent: &str) -> &'static str {
     }
 }
 
-fn fill(tpl: &str, agent: &str, other: &str, project: &str) -> String {
+/// Skipping agent files still leaves the shared protocol available to every agent.
+pub fn rules_source(root: &Path, agent: &str) -> &'static str {
+    let file = rules_file(agent);
+    let has_rules = fs::read_to_string(root.join(file))
+        .map(|s| s.contains(START) || s.contains(LEGACY_START))
+        .unwrap_or(false);
+    if has_rules { file } else { ".ai-common/PROTOCOL.md" }
+}
+
+fn fill(root: &Path, tpl: &str, agent: &str, other: &str, project: &str) -> String {
     tpl.replace("{tool_tips}", tool_tips(agent))
         .replace("{agent}", agent)
         .replace("{other}", other)
         .replace("{project}", project)
         .replace("{rules_file}", rules_file(agent))
+        .replace("{rules_source}", rules_source(root, agent))
         .replace("{room}", "main")
 }
 
@@ -182,7 +192,7 @@ pub fn role_prompt(root: &Path, role: &str, agent: &str, other: &str, project: &
     let builtin = if role == "executor" { EXECUTOR } else { ADVISOR };
     let tpl = override_tpl(root, &format!("{role}.md")).unwrap_or_else(|| builtin.to_string());
     let tpl = tpl.replace("{tool_tips}", tool_tips(agent)).replace("{room}", room);
-    fill(&tpl, agent, other, project).trim_end().to_string()
+    fill(root, &tpl, agent, other, project).trim_end().to_string()
 }
 
 fn override_tpl(root: &Path, name: &str) -> Option<String> {
@@ -193,14 +203,14 @@ pub fn rules(root: &Path, agent: &str, other: &str, project: &str) -> String {
     let tpl = override_tpl(root, &format!("{agent}.rules.md"))
         .or_else(|| override_tpl(root, "generic.rules.md"))
         .unwrap_or_else(|| RULES.to_string());
-    fill(&tpl, agent, other, project)
+    fill(root, &tpl, agent, other, project)
 }
 
 pub fn kickoff(root: &Path, agent: &str, other: &str, project: &str) -> String {
     let tpl = override_tpl(root, &format!("{agent}.md"))
         .or_else(|| override_tpl(root, "generic.md"))
         .unwrap_or_else(|| KICKOFF.to_string());
-    fill(&tpl, agent, other, project).trim_end().to_string()
+    fill(root, &tpl, agent, other, project).trim_end().to_string()
 }
 
 pub fn protocol() -> &'static str {

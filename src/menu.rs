@@ -84,6 +84,15 @@ pub fn confirm(prompt: &str, default_yes: bool) -> Result<bool> {
     Ok(cancellable(Confirm::new(prompt).with_default(default_yes).prompt())?.unwrap_or(false))
 }
 
+pub fn agent_files(default_yes: bool) -> Result<Option<bool>> {
+    cancellable(
+        Confirm::new("Create or update AGENTS.md and CLAUDE.md?")
+            .with_default(default_yes)
+            .with_help_message("yes: write cowork rules for configured agents · no: leave files untouched · esc: cancel")
+            .prompt(),
+    )
+}
+
 fn report(r: Result<()>) {
     if let Err(e) = r {
         println!("error: {e:#}");
@@ -126,18 +135,18 @@ fn setup_menu() -> Result<bool> {
 
     let Some(key) = select("What would you like to do?", options)? else { return Ok(false) };
     match key.as_str() {
-        "init" => report(commands::init(None, false, false)),
-        "init-nogit" => report(commands::init(None, true, false)),
+        "init" => report(commands::init(None, false, false, None)),
+        "init-nogit" => report(commands::init(None, true, false, None)),
         "explain" => {
             println!();
             println!("`cowork init` will:");
             println!("  1. create .ai-common/rooms/main.md, the shared log, plus PROTOCOL.md (kept as is if it exists)");
-            println!("  2. add a marked rules block to CLAUDE.md and AGENTS.md so each tool knows the protocol");
+            println!("  2. ask whether to add cowork rules to CLAUDE.md and AGENTS.md (existing text is preserved)");
             println!("  3. install the editor hooks in .claude/settings.json and .codex/hooks.json");
             println!("  4. add .ai-common/.cursors/ to .gitignore (per-agent read positions)");
             println!("  5. register the project for <project>/<room> addressing");
             println!("  6. print one kickoff prompt per agent to paste into its session");
-            println!("It is idempotent: running it again only refreshes the rules blocks, hooks, and prompts.");
+            println!("It is idempotent: running it again refreshes hooks and prompts, and optionally rules blocks.");
         }
         "doctor" => report(commands::doctor()),
         "list-all" => report(commands::list(true)),
@@ -202,7 +211,7 @@ fn create_room(p: &Project, parts: &[String]) -> Result<()> {
         return Ok(());
     };
     println!();
-    report(commands::new_room(&name, Some(purpose).filter(|s| !s.is_empty()), Some(exec)));
+    report(commands::new_room(&name, Some(purpose).filter(|s| !s.is_empty()), Some(exec), None));
     if paths::room_path(&p.root, &name).exists() {
         copy_prompt_offer(p, &name)?;
     }
@@ -360,7 +369,7 @@ fn main_menu(p: &Project) -> Result<bool> {
                     break;
                 }
                 println!();
-                println!("── setup prompt for {a} (its rules are already in {}) ──", templates::rules_file(&a));
+                println!("── setup prompt for {a} (rules: {}) ──", templates::rules_source(&p.root, &a));
                 report(commands::prompt(&a, false, can_copy, None));
                 println!();
             }
@@ -371,7 +380,7 @@ fn main_menu(p: &Project) -> Result<bool> {
         }
         "doctor" => report(commands::doctor()),
         "daemon" => report(commands::daemon_cmd(DaemonCmd::Status)),
-        "init" => report(commands::init(None, false, false)),
+        "init" => report(commands::init(None, false, false, None)),
         _ => return Ok(false),
     }
     Ok(true)

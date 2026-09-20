@@ -1,2 +1,5 @@
 target/
 dist/
+.ai-common/.cursors/
+history
+.env

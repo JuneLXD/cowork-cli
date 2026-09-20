@@ -60,6 +60,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool) -> Result<()> {
             purpose: "General coordination".into(),
             participants: participants.clone(),
             executor: String::new(),
+            last_id: 0,
         };
         fs::write(&main, fm.render())?;
         created.push(".ai-common/rooms/main.md");
@@ -172,6 +173,9 @@ fn gitignore_add(root: &Path, entry: &str) -> Result<()> {
 fn field(text: Option<String>, file: Option<String>) -> Result<Option<String>> {
     if let Some(f) = file {
         let content = if f == "-" {
+            if unsafe { libc::isatty(0) } == 1 {
+                eprintln!("(reading from stdin until end of input; pipe the text or use a heredoc)");
+            }
             let mut s = String::new();
             std::io::stdin().read_to_string(&mut s)?;
             s
@@ -183,28 +187,186 @@ fn field(text: Option<String>, file: Option<String>) -> Result<Option<String>> {
     Ok(text)
 }
 
+/// stdin can feed only one field: a second `-` would read an already-drained
+/// stream and silently record `None` (this happened in real runs).
+fn check_stdin_once(a: &PostArgs) -> Result<()> {
+    let users: Vec<&str> = [
+        ("--thoughts-file", &a.thoughts_file),
+        ("--action-file", &a.action_file),
+        ("--taken-file", &a.taken_file),
+        ("--handoff-file", &a.handoff_file),
+    ]
+    .iter()
+    .filter(|(_, v)| v.as_deref() == Some("-"))
+    .map(|(n, _)| *n)
+    .collect();
+    if users.len() > 1 {
+        bail!(
+            "stdin (-) can be read by only one --*-file flag, but {} all use it; put the other fields in files or pass them inline",
+            users.join(", ")
+        );
+    }
+    Ok(())
+}
+
 pub fn post(a: PostArgs) -> Result<()> {
     let rr = paths::resolve_room(a.room.as_deref())?;
     paths::ensure_room_exists(&rr)?;
     let me = agent::detect(a.agent.as_deref())?;
     room::validate_agent(&me)?;
-    let thoughts = field(a.thoughts, a.thoughts_file)?
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| anyhow!("--thoughts <TEXT> or --thoughts-file <PATH> is required"))?;
+    check_stdin_once(&a)?;
+    let vote = match a.vote {
+        Some(v) => normalize_vote(&v)?,
+        None => String::new(),
+    };
     let or_none = |v: Option<String>| v.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| NONE.into());
-    let msg = Message {
+    let taken = or_none(field(a.taken, a.taken_file)?);
+    // A vote, a completion, or a taken report is substantive on its own; anything
+    // else needs thoughts.
+    let thoughts = match field(a.thoughts, a.thoughts_file)?.filter(|s| !s.trim().is_empty()) {
+        Some(t) => t,
+        None if !vote.is_empty() || a.complete || taken != NONE => NONE.to_string(),
+        None => bail!("--thoughts <TEXT> or --thoughts-file <PATH> is required (a post with only --vote, --complete, or --taken may omit it)"),
+    };
+    if let Some(0) = a.re {
+        bail!("--re needs a message id of 1 or more (ids are printed by `room post` and shown in `room read`)");
+    }
+    let mut msg = Message {
+        id: None,
+        re: a.re,
+        proposal: a.propose,
+        completes: if a.complete { a.re } else { None },
         agent: me.clone(),
         timestamp: room::now_ts(),
         thoughts,
         action: or_none(field(a.action, a.action_file)?),
-        taken: or_none(field(a.taken, a.taken_file)?),
+        taken,
         handoff: or_none(field(a.handoff, a.handoff_file)?),
-        vote: a.vote.map(|v| v.trim().to_string()).unwrap_or_default(),
+        vote,
     };
-    room::append_locked(&rr.path, &msg.render())?;
-    cursor::save(&rr.project.root, &me, &rr.room, &msg.header())?;
-    println!("posted to {} as {} at {}", rr.addr(), me, msg.timestamp);
+    let addr = rr.addr();
+    let cfg = config::load(&rr.project.root);
+    let cfg_participants = agent::participants(&cfg);
+    let mut participants: Vec<String> = Vec::new();
+    let mut note: Option<String> = None;
+    let mut unread_behind: Vec<(u64, String)> = Vec::new();
+    let my_cursor = cursor::load(&rr.project.root, &me, &rr.room);
+    // The id is allocated, and the reply target checked, while the append lock is
+    // held, so concurrent posts cannot collide and a bad --re appends nothing.
+    room::append_locked(&rr.path, |content| {
+        let rf = room::parse(content);
+        let last = rf.last_id();
+        if let Some(re) = msg.re {
+            if re > last {
+                bail!("--re {re}: no such message in {addr}; the newest id is {last}");
+            }
+        }
+        participants = rf.participants(&cfg_participants);
+        if let Some(idx) = cursor::unread_index(&rf.messages, my_cursor.as_deref()) {
+            unread_behind = rf.messages[idx..]
+                .iter()
+                .filter(|m| m.agent != me)
+                .map(|m| (m.id.unwrap_or(0), m.agent.clone()))
+                .collect();
+        }
+        let analysis = crate::state::analyze(&rf, &participants);
+        if let Some(c) = msg.completes {
+            let Some(p) = analysis.get(c) else {
+                bail!("--complete --re {c}: #{c} is not a proposal in {addr} (open proposals: {})", open_ids(&analysis));
+            };
+            if p.state.is_terminal() {
+                bail!("--complete --re {c}: #{c} is already {} ", p.state.label());
+            }
+            if me != p.author && me != analysis.executor {
+                bail!("--complete --re {c}: only {} (its author) or {} (the executor) can complete #{c}", p.author, analysis.executor);
+            }
+        }
+        if let Some(re) = msg.re {
+            if let Some(p) = analysis.get(re) {
+                if let Some(d) = msg.decision() {
+                    if me == p.author {
+                        note = Some(format!("note: a vote on your own proposal #{re} is informational; it does not count"));
+                    } else if !participants.iter().any(|a| a == &me) {
+                        note = Some(format!("note: `{me}` is not a participant of this room, so this vote on #{re} is informational"));
+                    } else {
+                        note = Some(format!("{d} on #{re}"));
+                    }
+                }
+            } else if !msg.vote.is_empty() {
+                note = Some(format!("note: #{re} is not a proposal, so this vote is informational; vote on the proposal id shown by `room status`"));
+            }
+        } else if !msg.vote.is_empty() {
+            note = Some("note: this vote is not linked to a proposal; add --re <id> so it counts as the decision on that proposal".to_string());
+        }
+        msg.id = Some(last + 1);
+        msg.timestamp = room::now_ts();
+        Ok(msg.render())
+    })?;
+    let id = msg.id.unwrap_or(0);
+    let mut tag = String::new();
+    if msg.proposal {
+        let others = agent::counterpart(&me, &participants);
+        tag = format!(" (proposal; {others} votes with: room post --room {} --re {id} --vote \"approve: reason\" [--thoughts \"...\"])", rr.room);
+    } else if let Some(c) = msg.completes {
+        tag = format!(" (completes #{c})");
+    } else if let Some(n) = &note {
+        if !n.starts_with("note:") {
+            tag = format!(" ({n})");
+        }
+    }
+    if let Some(n) = &note {
+        if n.starts_with("note:") {
+            eprintln!("{n}");
+        }
+    }
+    if !unread_behind.is_empty() {
+        let mut agents: Vec<String> = unread_behind.iter().map(|(_, a)| a.clone()).collect();
+        agents.dedup();
+        let ids: Vec<String> = unread_behind.iter().filter(|(i, _)| *i > 0).map(|(i, _)| format!("#{i}")).collect();
+        let ids = if ids.is_empty() { String::new() } else { format!(" ({})", ids.join(", ")) };
+        eprintln!(
+            "note: {} unread message(s) from {}{ids} precede this post; run `room read --room {}` before acting on their replies",
+            unread_behind.len(),
+            agents.join(", "),
+            rr.room
+        );
+    }
+    // Posting is not reading: never move an existing cursor, or a message that
+    // arrived while this post was being written would be skipped. A caller with
+    // no cursor gets an empty one, so its first read or wait starts from the
+    // beginning instead of from the current tail.
+    if cursor::load(&rr.project.root, &me, &rr.room).is_none() {
+        cursor::save(&rr.project.root, &me, &rr.room, "")?;
+    }
+    println!("posted #{id} to {} as {} at {}{tag}", rr.addr(), me, msg.timestamp);
     Ok(())
+}
+
+fn open_ids(a: &crate::state::Analysis) -> String {
+    let ids: Vec<String> = a.open().map(|p| format!("#{}", p.id)).collect();
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(", ")
+    }
+}
+
+/// A vote must start with approve, reject, or abstain and a colon, so the decision
+/// is machine-readable. The reason after the colon stays free text.
+fn normalize_vote(v: &str) -> Result<String> {
+    let t = v.trim();
+    let (word, rest) = t
+        .split_once(':')
+        .ok_or_else(|| anyhow!("--vote must look like \"approve: reason\", \"reject: reason\", or \"abstain: reason\" (got `{t}`)"))?;
+    let word = word.trim().to_ascii_lowercase();
+    if !["approve", "reject", "abstain"].contains(&word.as_str()) {
+        bail!("--vote must start with approve, reject, or abstain followed by a colon (got `{t}`)");
+    }
+    let rest = rest.trim();
+    if rest.is_empty() {
+        bail!("--vote needs a reason after the colon, e.g. \"{word}: because ...\"");
+    }
+    Ok(format!("{word}: {rest}"))
 }
 
 // ---------- read ----------
@@ -216,10 +378,61 @@ fn print_messages(msgs: &[Message], json: bool, empty_note: &str) -> Result<()> 
         println!("{empty_note}");
     } else {
         for m in msgs {
-            print!("{}", m.render());
+            print!("{}", m.render_display());
         }
     }
     Ok(())
+}
+
+/// One line per message for `read --brief`. Proposal and vote markers come from
+/// the whole room so a filtered slice still shows the right state.
+fn print_brief(all: &room::RoomFile, msgs: &[Message], participants: &[String]) {
+    let analysis = crate::state::analyze(all, participants);
+    for m in msgs {
+        let id = m.id.map(|i| format!("#{i}")).unwrap_or_else(|| "-".to_string());
+        let marker = if m.proposal {
+            let st = m.id.and_then(|i| analysis.get(i)).map(|p| p.state.label()).unwrap_or("proposal");
+            format!("[proposal: {st}]")
+        } else if let Some(c) = m.completes {
+            format!("[completes #{c}]")
+        } else if let Some(d) = m.decision() {
+            let counted = m
+                .re
+                .and_then(|re| analysis.get(re))
+                .map(|p| p.votes.iter().any(|v| Some(v.id) == m.id))
+                .unwrap_or(false);
+            match (counted, m.re) {
+                (true, Some(re)) => format!("[{d} on #{re}]"),
+                (false, Some(re)) => format!("[{d} on #{re}, informational]"),
+                (false, None) => format!("[{d}, informational]"),
+                (true, None) => format!("[{d}]"),
+            }
+        } else if m.re.is_some() {
+            format!("[re #{}]", m.re.unwrap())
+        } else {
+            String::new()
+        };
+        let is_none = |v: &str| v.trim().is_empty() || v.trim().eq_ignore_ascii_case(NONE);
+        let text = if !m.vote.is_empty() {
+            &m.vote
+        } else if !is_none(&m.action) {
+            &m.action
+        } else if !is_none(&m.taken) {
+            &m.taken
+        } else if !is_none(&m.handoff) {
+            &m.handoff
+        } else {
+            &m.thoughts
+        };
+        let first = text.lines().next().unwrap_or("").trim();
+        let mut short: String = first.chars().take(80).collect();
+        if first.chars().count() > 80 {
+            short.push_str("...");
+        }
+        let age = crate::state::age(&m.timestamp);
+        let marker = if marker.is_empty() { String::new() } else { format!(" {marker}") };
+        println!("{id:>5} {:<8} {age:>8}{marker} {short}", m.agent);
+    }
 }
 
 pub fn read(a: ReadArgs) -> Result<()> {
@@ -253,14 +466,30 @@ pub fn read(a: ReadArgs) -> Result<()> {
         match cursor::unread_index(&rf.messages, cur.as_deref()) {
             Some(i) => msgs = rf.messages[i..].to_vec(),
             None => {
-                let n = cfg.tail.unwrap_or(40);
-                raw = Some(room::last_lines(&content, n));
-                msgs = room::parse(raw.as_deref().unwrap()).messages;
+                // First read ever: the most recent complete messages that fit the
+                // tail budget, and always at least the latest one. Parsing a raw line
+                // slice instead could start inside a long message and drop it.
+                let budget = cfg.tail.unwrap_or(40);
+                let mut start = rf.messages.len();
+                let mut lines = 0;
+                while start > 0 {
+                    let n = rf.messages[start - 1].render().lines().count();
+                    if lines + n > budget && start < rf.messages.len() {
+                        break;
+                    }
+                    lines += n;
+                    start -= 1;
+                }
+                msgs = rf.messages[start..].to_vec();
             }
+        }
+        // Unread means "what others said": own posts are hidden unless asked for with --agent.
+        if a.agent.is_none() {
+            msgs.retain(|m| m.agent != me);
         }
         if !a.no_advance {
             if let Some(last) = rf.messages.last() {
-                cursor::save(&rr.project.root, &me, &rr.room, &last.header())?;
+                cursor::save(&rr.project.root, &me, &rr.room, &last.cursor_token())?;
             }
         }
     }
@@ -270,6 +499,13 @@ pub fn read(a: ReadArgs) -> Result<()> {
     }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&msgs)?);
+    } else if a.brief {
+        if msgs.is_empty() {
+            println!("(no {} messages in {})", if unread_mode { "unread" } else { "matching" }, rr.addr());
+        } else {
+            let participants = rf.participants(&agent::participants(&cfg));
+            print_brief(&rf, &msgs, &participants);
+        }
     } else if let Some(t) = raw {
         print!("{t}");
     } else {
@@ -310,7 +546,7 @@ pub fn wait(a: WaitArgs) -> Result<i32> {
     for r in &rooms {
         if cursor::load(&root, &me, r).is_none() {
             let rf = room::parse(&room::read_locked(&paths::room_path(&root, r))?);
-            let h = rf.messages.last().map(|m| m.header()).unwrap_or_default();
+            let h = rf.messages.last().map(|m| m.cursor_token()).unwrap_or_default();
             cursor::save(&root, &me, r, &h)?;
         }
     }
@@ -330,7 +566,7 @@ pub fn wait(a: WaitArgs) -> Result<i32> {
                 }
                 print_messages(&fresh, a.json, "")?;
                 if let Some(last) = rf.messages.last() {
-                    cursor::save(&root, &me, r, &last.header())?;
+                    cursor::save(&root, &me, r, &last.cursor_token())?;
                 }
                 found = true;
             }
@@ -380,6 +616,7 @@ pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>) -
         purpose: purpose.unwrap_or_default(),
         participants: participants.clone(),
         executor: executor.clone(),
+        last_id: 0,
     };
     fs::write(&path, fm.render())?;
     println!("created room {}/{} (executor: {executor})", project.name, name);
@@ -492,7 +729,7 @@ pub fn stream(room_addr: Option<String>, last: usize, json: bool) -> Result<()> 
     paths::ensure_room_exists(&rr)?;
     let rf = room::parse(&room::read_locked(&rr.path)?);
     let start = rf.messages.len().saturating_sub(last);
-    let mut seen = rf.messages.last().map(|m| m.header()).unwrap_or_default();
+    let mut seen = rf.messages.last().map(|m| m.cursor_token()).unwrap_or_default();
     print_messages(&rf.messages[start..], json, "")?;
     eprintln!("── streaming {} · ctrl-c to stop ──", rr.addr());
     install_sigint();
@@ -509,7 +746,7 @@ pub fn stream(room_addr: Option<String>, last: usize, json: bool) -> Result<()> 
         let idx = cursor::unread_index(&rf.messages, Some(&seen)).unwrap_or(0);
         if idx < rf.messages.len() {
             print_messages(&rf.messages[idx..], json, "")?;
-            seen = rf.messages.last().map(|m| m.header()).unwrap_or_default();
+            seen = rf.messages.last().map(|m| m.cursor_token()).unwrap_or_default();
         }
     }
     STOP.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -629,6 +866,9 @@ pub fn list(all: bool) -> Result<()> {
 
 fn room_status(project: &Project, name: &str) -> Result<serde_json::Value> {
     let rf = room::parse(&room::read_locked(&paths::room_path(&project.root, name))?);
+    let cfg = config::load(&project.root);
+    let participants = rf.participants(&agent::participants(&cfg));
+    let analysis = crate::state::analyze(&rf, &participants);
     let mut latest: BTreeMap<String, &Message> = BTreeMap::new();
     for m in &rf.messages {
         latest.insert(m.agent.clone(), m);
@@ -643,18 +883,87 @@ fn room_status(project: &Project, name: &str) -> Result<serde_json::Value> {
         "project": project.name,
         "room": name,
         "messages": rf.messages.len(),
+        "executor": analysis.executor,
+        "policy": analysis.policy,
+        "proposals": analysis.proposals,
+        "informational_votes": analysis.informational_votes,
         "last_post": last_post,
         "open_handoffs": open,
     }))
 }
 
+fn print_proposal_line(p: &serde_json::Value) {
+    let votes: Vec<String> = p["votes"]
+        .as_array()
+        .map(|vs| vs.iter().map(|v| format!("{} {}", v["agent"].as_str().unwrap_or(""), v["decision"].as_str().unwrap_or(""))).collect())
+        .unwrap_or_default();
+    let waiting: Vec<&str> = p["waiting_for"].as_array().map(|w| w.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let mut extra = Vec::new();
+    if !votes.is_empty() {
+        extra.push(format!("votes: {}", votes.join(", ")));
+    }
+    if !waiting.is_empty() {
+        extra.push(format!("waiting for: {}", waiting.join(", ")));
+    }
+    let extra = if extra.is_empty() { String::new() } else { format!("  [{}]", extra.join("; ")) };
+    println!(
+        "    #{} {} {}: {}{extra}",
+        p["id"],
+        p["author"].as_str().unwrap_or(""),
+        crate::state::age(p["timestamp"].as_str().unwrap_or("")),
+        p["summary"].as_str().unwrap_or("")
+    );
+}
+
 fn print_status(s: &serde_json::Value) {
     println!(
-        "{}/{}  ({} messages)",
+        "{}/{}  ({} messages)  executor: {}  policy: {}",
         s["project"].as_str().unwrap_or(""),
         s["room"].as_str().unwrap_or(""),
-        s["messages"]
+        s["messages"],
+        s["executor"].as_str().unwrap_or("-"),
+        s["policy"].as_str().unwrap_or("")
     );
+    let props: Vec<&serde_json::Value> = s["proposals"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
+    let groups = [
+        ("pending", "awaiting votes"),
+        ("approved", "approved, not completed"),
+        ("rejected", "rejected, not revised"),
+        ("abstained", "abstained, still open"),
+    ];
+    let mut any_open = false;
+    for (state, title) in groups {
+        let in_group: Vec<&&serde_json::Value> = props.iter().filter(|p| p["state"] == state).collect();
+        if in_group.is_empty() {
+            continue;
+        }
+        any_open = true;
+        println!("  {title}:");
+        for p in in_group {
+            print_proposal_line(p);
+        }
+    }
+    if !any_open && !props.is_empty() {
+        println!("  no open proposals");
+    }
+    let done: Vec<&&serde_json::Value> = props.iter().filter(|p| p["state"] == "completed" || p["state"] == "superseded").collect();
+    if !done.is_empty() {
+        let recent: Vec<String> = done
+            .iter()
+            .rev()
+            .take(3)
+            .map(|p| {
+                let by = p["completed_by"].as_u64().or(p["superseded_by"].as_u64()).unwrap_or(0);
+                format!("#{} {} by #{by}", p["id"], p["state"].as_str().unwrap_or(""))
+            })
+            .collect();
+        println!("  recent: {}", recent.join(", "));
+    }
+    if let Some(n) = s["informational_votes"].as_u64() {
+        if n > 0 {
+            println!("  informational votes (unlinked, self, or non-participant): {n}");
+        }
+    }
     if let Some(lp) = s["last_post"].as_object() {
         if lp.is_empty() {
             println!("  no posts yet");
@@ -819,13 +1128,36 @@ pub fn archive(room_addr: Option<String>, keep: Option<usize>) -> Result<()> {
     let apath = adir.join(&fname);
     let mut moved = 0usize;
     let addr = rr.addr();
+    let cfg_participants = agent::participants(&cfg);
+    let mut kept_live = 0usize;
     room::rewrite_locked(&rr.path, |content| {
         let rf = room::parse(content);
         if rf.messages.len() <= keep {
             return Ok(None);
         }
-        let n = rf.messages.len() - keep;
-        let (old, new) = rf.messages.split_at(n);
+        // The newest `keep` messages always stay. Older messages that belong to an
+        // unresolved proposal thread stay too, so proposal state survives archiving.
+        let participants = rf.participants(&cfg_participants);
+        let live = crate::state::live_thread_ids(&rf, &participants);
+        let tail_start = rf.messages.len() - keep;
+        let mut old: Vec<Message> = Vec::new();
+        let mut new: Vec<Message> = Vec::new();
+        for (i, m) in rf.messages.iter().enumerate() {
+            let protected = m.id.map(|x| live.contains(&x)).unwrap_or(false);
+            if i >= tail_start {
+                new.push(m.clone());
+            } else if protected {
+                kept_live += 1;
+                new.push(m.clone());
+            } else {
+                old.push(m.clone());
+            }
+        }
+        if old.is_empty() {
+            return Ok(None);
+        }
+        let n = old.len();
+        let (old, new) = (old.as_slice(), new.as_slice());
         let mut atext = String::new();
         if !apath.exists() {
             atext.push_str(&format!("# Archive of {addr} ({date})\n\n"));
@@ -837,7 +1169,13 @@ pub fn archive(room_addr: Option<String>, keep: Option<usize>) -> Result<()> {
         af.write_all(atext.as_bytes())?;
         af.sync_all()?;
         moved = n;
-        let mut out = rf.head.clone();
+        // Ids stay contiguous: record the high-water mark before dropping messages.
+        let mut front = rf.front.clone();
+        if let Some(f) = front.as_mut() {
+            f.last_id = rf.last_id();
+        }
+        let mut out = front.map(|f| f.render()).unwrap_or_default();
+        out.push_str(&rf.head);
         if !out.is_empty() && !out.ends_with("\n\n") {
             out.push('\n');
         }
@@ -851,9 +1189,12 @@ pub fn archive(room_addr: Option<String>, keep: Option<usize>) -> Result<()> {
         Ok(Some(out))
     })?;
     if moved == 0 {
-        println!("nothing to archive: {addr} has {keep} or fewer messages");
+        println!("nothing to archive: {addr} has {keep} or fewer messages that are not part of an open proposal");
     } else {
         println!("archived {moved} messages from {addr} to {}", apath.display());
+    }
+    if kept_live > 0 {
+        println!("kept {kept_live} older message(s) that belong to open proposals");
     }
     Ok(())
 }
@@ -981,6 +1322,10 @@ pub fn doctor() -> Result<()> {
         Some(v) => line(true, false, format!("daemon running (pid {}, watching {} dirs)", v["pid"], v["watched_dirs"])),
         None => line(false, true, "daemon not running; it auto-starts when `room wait` needs it (`room daemon start` to test)".into()),
     }
+
+    // feedback endpoint
+    let (ok, msg) = crate::feedback::describe();
+    line(ok, true, msg);
 
     // clipboard
     let clip = ["clip.exe", "xclip", "wl-copy"].iter().find(|b| which(b));

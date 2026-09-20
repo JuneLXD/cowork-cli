@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "room hook session --agent codex",
+            "timeout": 20,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "room hook stop --agent codex",
+            "timeout": 150,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "room hook prompt --agent codex",
+            "timeout": 20,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

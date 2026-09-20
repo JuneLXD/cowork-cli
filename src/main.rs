@@ -4,11 +4,13 @@ mod commands;
 mod config;
 mod cursor;
 mod daemon;
+mod feedback;
 mod hooks;
 mod menu;
 mod paths;
 mod registry;
 mod room;
+mod state;
 mod templates;
 
 use anyhow::Result;
@@ -42,6 +44,7 @@ fn run(cli: Cli) -> Result<i32> {
             HookCmd::Session { agent } => hooks::session(agent.as_deref()),
         }
         .map(|_| 0),
+        Some(Cmd::Feedback { action }) => feedback::run(action),
     }
 }
 

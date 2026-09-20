@@ -22,9 +22,15 @@ pub struct Config {
     /// Max consecutive continues a Stop hook may force in one session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hook_max_continues: Option<u64>,
+    /// Override for where `room feedback` sends reports (a Supabase project URL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback_url: Option<String>,
+    /// The publishable (insert-only) key for that endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feedback_key: Option<String>,
 }
 
-pub const KEYS: &[&str] = &["name", "agents", "tail", "wait_timeout", "archive_keep", "hook_wait", "hook_max_continues"];
+pub const KEYS: &[&str] = &["name", "agents", "tail", "wait_timeout", "archive_keep", "hook_wait", "hook_max_continues", "feedback_url", "feedback_key"];
 
 pub fn load(root: &Path) -> Config {
     fs::read_to_string(paths::config_path(root))
@@ -57,6 +63,8 @@ pub fn set(root: &Path, key: &str, value: &str) -> Result<()> {
         "hook_max_continues" => {
             cfg.hook_max_continues = Some(value.parse().context("hook_max_continues must be a number")?)
         }
+        "feedback_url" => cfg.feedback_url = Some(value.trim().to_string()),
+        "feedback_key" => cfg.feedback_key = Some(value.trim().to_string()),
         _ => bail!("unknown key `{key}`; valid keys: {}", KEYS.join(", ")),
     }
     save(root, &cfg)
@@ -72,6 +80,8 @@ pub fn get(root: &Path, key: &str) -> Result<Option<String>> {
         "archive_keep" => cfg.archive_keep.map(|v| v.to_string()),
         "hook_wait" => cfg.hook_wait.map(|v| v.to_string()),
         "hook_max_continues" => cfg.hook_max_continues.map(|v| v.to_string()),
+        "feedback_url" => cfg.feedback_url,
+        "feedback_key" => cfg.feedback_key,
         _ => bail!("unknown key `{key}`; valid keys: {}", KEYS.join(", ")),
     })
 }

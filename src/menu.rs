@@ -240,6 +240,7 @@ fn room_menu(p: &Project, cfg: &config::Config, room: &str) -> Result<()> {
                     agent: None,
                     me: None,
                     json: false,
+                    brief: false,
                     no_advance: true,
                 }));
             }
@@ -267,6 +268,9 @@ fn room_menu(p: &Project, cfg: &config::Config, room: &str) -> Result<()> {
                     taken: None,
                     handoff: Some(handoff),
                     vote: None,
+                    re: None,
+                    propose: false,
+                    complete: false,
                     thoughts_file: None,
                     action_file: None,
                     taken_file: None,
@@ -286,6 +290,7 @@ fn room_menu(p: &Project, cfg: &config::Config, room: &str) -> Result<()> {
                     agent: None,
                     me: Some(me),
                     json: false,
+                    brief: false,
                     no_advance: false,
                 }));
             }

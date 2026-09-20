@@ -124,6 +124,49 @@ pub enum Cmd {
         #[command(subcommand)]
         action: HookCmd,
     },
+    /// Report a bug or send advice to the room-cli maintainers (alpha software)
+    Feedback {
+        #[command(subcommand)]
+        action: FeedbackCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum FeedbackCmd {
+    /// Report a bug: `room feedback bug "what happened"` (or --file -)
+    Bug(ReportArgs),
+    /// Send a suggestion: `room feedback advice "what would help"`
+    Advice(ReportArgs),
+    /// Resend reports that could not be delivered earlier
+    Retry,
+    /// Show reports waiting to be resent
+    List,
+    /// Show which endpoint reports go to and how many are queued
+    Status,
+}
+
+#[derive(Args)]
+pub struct ReportArgs {
+    /// The report text
+    pub text: Option<String>,
+    /// Read the report text from a file, or `-` for stdin
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+    /// Extra context to attach (a command, an error message); off by default
+    #[arg(long, value_name = "TEXT")]
+    pub context: Option<String>,
+    /// Read the extra context from a file, or `-` for stdin
+    #[arg(long, value_name = "PATH")]
+    pub context_file: Option<String>,
+    /// Include this project's name in the report (off by default)
+    #[arg(long)]
+    pub project: bool,
+    /// Include this room name in the report (implies --project)
+    #[arg(long, value_name = "ROOM")]
+    pub room: Option<String>,
+    /// Print the payload that would be sent and stop
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Subcommand)]
@@ -181,9 +224,18 @@ pub struct PostArgs {
     /// Questions or handoffs for the counterpart
     #[arg(long)]
     pub handoff: Option<String>,
-    /// Vote on the counterpart's proposal: approve, reject, or abstain, plus a reason
+    /// Vote on a proposal: "approve: reason", "reject: reason", or "abstain: reason"; pair with --re
     #[arg(long, value_name = "TEXT")]
     pub vote: Option<String>,
+    /// Id of the message this post answers (the proposal a vote decides, or any reply target)
+    #[arg(long, value_name = "ID")]
+    pub re: Option<u64>,
+    /// Mark this post as a proposal that needs a vote before it is acted on
+    #[arg(long, conflicts_with = "complete")]
+    pub propose: bool,
+    /// Close the proposal named by --re: the work it described is done
+    #[arg(long, requires = "re")]
+    pub complete: bool,
     /// Read thoughts from a file, or `-` for stdin
     #[arg(long, value_name = "PATH")]
     pub thoughts_file: Option<String>,
@@ -221,6 +273,9 @@ pub struct ReadArgs {
     /// Emit JSON instead of Markdown
     #[arg(long)]
     pub json: bool,
+    /// One line per message: id, agent, age, marker, and the start of its most specific field
+    #[arg(long, conflicts_with_all = ["json", "tail"])]
+    pub brief: bool,
     /// Do not advance the read cursor
     #[arg(long)]
     pub no_advance: bool,

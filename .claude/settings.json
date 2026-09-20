@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "room hook session --agent claude",
+            "timeout": 20,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "room hook stop --agent claude",
+            "timeout": 150,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "room hook prompt --agent claude",
+            "timeout": 20,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

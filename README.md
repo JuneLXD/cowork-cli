@@ -5,14 +5,14 @@ Codex, others) talk to each other through a shared, locked Markdown log inside a
 repository. Every write takes a kernel-level `flock`, so concurrent posts never
 corrupt the file. Every read returns only what the caller has not seen yet.
 
-The full design is in [room-cli.md](room-cli.md).
+The full design is in [docs/design.md](docs/design.md); the layout of this repository is in [docs/layout.md](docs/layout.md).
 
 ## Install
 
 With Rust on the machine, from a checkout:
 
 ```sh
-./install.sh            # builds with cargo, installs ~/.local/bin/room
+./scripts/install.sh    # builds with cargo, installs ~/.local/bin/room
 # or
 cargo install --path .  # installs ~/.cargo/bin/room
 ```
@@ -27,7 +27,20 @@ cargo build --release --target x86_64-unknown-linux-musl
 scp target/x86_64-unknown-linux-musl/release/room other-host:~/.local/bin/room
 ```
 
+The static build needs a musl C toolchain on the build machine for the TLS library
+(`sudo apt install musl-tools` on Debian or Ubuntu). It is a build dependency only.
+
 Then `room init` in a repository on the other machine. Linux and WSL only.
+
+### Feedback endpoint
+
+`room feedback` needs to know where reports go. At build time, `build.rs` reads
+`ROOM_FEEDBACK_URL` and `ROOM_FEEDBACK_KEY` from the environment, or `project_ID` and
+`publishable_key` from a `.env` file next to `Cargo.toml`, and bakes them into the
+binary. Only a publishable (insert-only) key is accepted; anything else is dropped. A
+build without either source still works, and `room feedback` then explains how to set an
+endpoint at runtime: `room config set feedback_url ...` and `feedback_key ...`, or the
+two environment variables. The table schema is in `supabase/feedback.sql`.
 
 ## Quick start
 
@@ -79,8 +92,14 @@ Each prompt is self-contained: role, working loop, and the exact commands to use
 agent can work from the prompt alone. Prompts are saved under `.ai-common/prompts/` and
 reprinted with `room prompt <agent> --room <name>`.
 
-Votes are a field on a post: `room post --vote "approve: reason"` or
-`--vote "reject: reason"`. They show up as a `Vote` line in the log and in `--json`.
+Every message has a per-room id. The executor posts a plan with `--propose`; the advisor
+decides it with `--re <id> --vote "approve: reason"` or `"reject: reason"`; the executor
+closes it with `--complete --re <id>`. Only a vote from another participant on the
+proposal id counts, and only the latest vote per voter; everything else is shown as
+informational. `room status` lists every open proposal with who still has to vote, and
+`room archive` never moves an open proposal thread. A post needs `--thoughts` unless it
+carries `--vote`, `--taken`, or `--complete`. Readers see only fields with content; the
+log keeps every field.
 
 ## Everyday commands
 
@@ -88,7 +107,11 @@ Votes are a field on a post: `room post --vote "approve: reason"` or
 room                    # status of every room in this project
 room read               # unread messages for the calling agent
 room read --last 3      # last three messages; add --json for structured output
+room read --brief       # one line per message: id, agent, age, marker, first words
 room post --thoughts "..." --action "..." --taken "..." --handoff "..."
+room post --propose --thoughts "why" --action "what"     # a plan that needs a vote; prints its id
+room post --re 12 --vote "approve: reason"               # the decision on proposal #12
+room post --re 12 --taken "..." --complete               # close #12 when the work is done
 room post --thoughts-file - < notes.md     # multi-line content from stdin
 room wait --timeout 300 # block until someone else posts (exit 2 on timeout)
 room wait --all-rooms   # same, across every room of the project
@@ -103,7 +126,31 @@ room status --json
 room archive --keep 20  # move older messages to .ai-common/archive/
 room lock plan.md -- sh -c 'echo step >> plan.md'   # any command under an exclusive lock
 room doctor             # check PATH, project, agent identity, daemon, clipboard
+room feedback bug "..."         # report a bug to the maintainers (alpha software)
+room feedback advice "..."      # send a suggestion; --file -, --context, --project are optional
+room feedback retry             # resend reports that were queued while offline
 ```
+
+## Feedback (alpha)
+
+room-cli is alpha software, and every prompt tells the agents so. Anyone, human or
+agent, can send a bug report or a suggestion:
+
+```sh
+room feedback bug "wait returned exit 2 although codex had posted"
+room feedback advice --file - <<'EOF'
+status should list pending proposals
+EOF
+```
+
+A report is sent only when the command runs; no other command touches the network. The
+default payload is the kind, the text, the CLI version, a coarse OS name (linux or wsl),
+and who reported (claude, codex, or human). `--project` adds the project name, `--room`
+adds a room name, `--context` attaches text you choose. `--dry-run` prints the payload
+instead of sending it. Reports go to an insert-only table; the key in the binary cannot
+read them back. If sending fails, the report is queued under the data directory and
+`room feedback retry` resends it later. `room feedback list` and `room feedback status`
+show the queue and the endpoint.
 
 ## How the agent is identified
 

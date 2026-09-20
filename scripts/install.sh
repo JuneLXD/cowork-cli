@@ -1,8 +1,9 @@
 #!/bin/sh
 # Build room-cli from source and install the `room` binary into ~/.local/bin.
-# Usage: ./install.sh            (from a checkout)
+# Usage: ./scripts/install.sh    (from a checkout; ROOM_INSTALL_DIR overrides the destination)
 set -e
-here="$(cd "$(dirname "$0")" && pwd)"
+# This script lives in scripts/; the project root is its parent.
+here="$(cd "$(dirname "$0")/.." && pwd)"
 dest="${ROOM_INSTALL_DIR:-$HOME/.local/bin}"
 
 if ! command -v cargo >/dev/null 2>&1; then

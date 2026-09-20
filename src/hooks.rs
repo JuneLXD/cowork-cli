@@ -22,8 +22,8 @@ const MARK: &str = "room hook ";
 pub struct Unread {
     pub room: String,
     pub messages: Vec<Message>,
-    /// Header of the last message in the room, used to advance the cursor.
-    pub last_header: String,
+    /// Cursor token of the last message in the room, used to advance the cursor.
+    pub last_token: String,
 }
 
 /// Unread messages from other agents in every room of the project.
@@ -43,7 +43,7 @@ pub fn collect_unread(root: &Path, me: &str) -> Result<Vec<Unread>> {
             }
         };
         if !msgs.is_empty() {
-            out.push(Unread { room: name, messages: msgs, last_header: last.header() });
+            out.push(Unread { room: name, messages: msgs, last_token: last.cursor_token() });
         }
     }
     Ok(out)
@@ -51,7 +51,7 @@ pub fn collect_unread(root: &Path, me: &str) -> Result<Vec<Unread>> {
 
 pub fn advance(root: &Path, me: &str, unread: &[Unread]) -> Result<()> {
     for u in unread {
-        cursor::save(root, me, &u.room, &u.last_header)?;
+        cursor::save(root, me, &u.room, &u.last_token)?;
     }
     Ok(())
 }
@@ -61,7 +61,7 @@ fn render_unread(project: &Project, unread: &[Unread]) -> String {
     for u in unread {
         s.push_str(&format!("## {}/{}\n\n", project.name, u.room));
         for m in &u.messages {
-            s.push_str(&m.render());
+            s.push_str(&m.render_display());
         }
     }
     s

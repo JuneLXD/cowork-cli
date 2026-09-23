@@ -6,3 +6,4 @@ history
 .env.*
 !.env.example
 export/
+/docs/www.kimi.com_documentation.md

@@ -4,7 +4,7 @@
 
 ![Linux and WSL](https://img.shields.io/badge/platform-Linux%20%7C%20WSL-blue) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-`cowork` gives two or more coding agents (Claude Code, Codex, others) and the person running
+`cowork` gives two or three coding agents (Claude Code, Codex, Kimi Code, others) and the person running
 them a shared, append-only Markdown log inside the repository. Every write takes a file lock,
 every message has an id, plans are proposals that need a vote, and `cowork status` shows what
 is open and who is holding it up. No remote service is required: the log is a file in the
@@ -53,6 +53,11 @@ coordinate on their own. Codex asks you once to trust the hooks (`/hooks` inside
 `cowork doctor` then confirms the setup; before `cowork init` it reports that no project is
 set up, which is expected.
 
+The agents default to `claude,codex`; `cowork init --agents claude,codex,kimi` picks a different set
+of two or three. On a terminal, a bare `cowork` in a repository that is not set up yet offers the same
+choice as a checklist before running setup. That list becomes `main`'s members and the default
+for new rooms.
+
 On a terminal, setup and room creation ask whether to create or update the agent files.
 Use either flag to choose without a prompt:
 
@@ -70,11 +75,20 @@ configured participants are written. When a file has no cowork block, prompts an
 to `.ai-common/PROTOCOL.md` instead. Hooks and onboarding prompts are still installed when skipped.
 
 For a task with a clear owner, create a room with roles. The executor is the only agent that
-edits files; the advisor reviews and votes:
+edits files; the advisors review and vote:
 
 ```sh
 cowork new landing --purpose "Fix the responsive nav" --executor claude
+cowork new review --agents claude,codex,kimi --executor kimi   # this room's own two or three agents
 ```
+
+A room holds two or three agents: one executor, and one or two advisors. With two advisors, one
+approve is enough and any reject blocks. On a terminal, a bare `cowork` opens a menu: *Create a
+room* asks which AIs take part and which one executes, and *Choose AIs for new rooms* changes the
+default. A room keeps the members it was created with; changing the default never changes an
+existing room, `main` included, because votes are counted against the room's own list. An agent
+picked for one room only may still need its hooks: `cowork new` and the menu say which command
+to run.
 
 A complete round in that room, from a plain shell with explicit identities (agents get theirs
 from their own environment and omit `COWORK_AGENT=`):
@@ -158,12 +172,32 @@ An agent is identified by `--agent` on `post` or `--me` on `read` and `wait`, th
 repositories are addressed as `<project>/<room>`, where the project name defaults to the
 repository directory name.
 
+## Kimi Code
+
+Kimi Code (`kimi`) joins like the others, with three differences its prompts already explain:
+
+- **Identity.** Its shell sets no marker `cowork` can recognize, so it runs every command as
+  `COWORK_AGENT=kimi cowork ...`.
+- **Waiting.** It starts `cowork wait --room <room> --timeout 600` as a background task with
+  `disable_timeout=true`, then calls Kimi Code's `WaitFor` on that task to keep waiting inside
+  its turn. In the foreground it uses `--timeout 50`. `cowork wait --all-rooms` covers only the
+  rooms the caller belongs to.
+- **Hooks are global and opt-in.** Kimi Code reads hooks only from `~/.kimi-code/config.toml`
+  (or `$KIMI_CODE_HOME/config.toml`), which every project shares, so `cowork` writes there only
+  when you run `cowork hook install --tool kimi`. It then adds one marked block with two
+  entries: before each of your prompts Kimi gets its unread messages, and when it ends a turn
+  the Stop hook can hand it new messages once more in that turn (Kimi Code allows one such
+  continuation per turn). In projects where `kimi` is in no room, the hooks return at once.
+  `cowork hook remove --tool kimi` takes the block out and leaves the rest of the file
+  byte-for-byte as it was; a file it cannot edit safely is left unchanged with an error.
+  `--tool all`, `cowork init`, and the menu never touch it.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `cowork init` | set up `.ai-common/`, rules blocks, hooks, and kickoff prompts |
-| `cowork new <name> --purpose "..." --executor <agent>` | create a room and print its role prompts |
+| `cowork new <name> --purpose "..." --executor <agent> [--agents a,b[,c]]` | create a room and print its role prompts |
 | `cowork read` | unread messages for the calling agent; `--last N`, `--brief`, `--json` |
 | `cowork post` | append a message: `--thoughts`, `--action`, `--taken`, `--handoff`, `--propose`, `--re <id>`, `--vote`, `--complete` |
 | `cowork wait --timeout 300` | block until someone else posts (exit 2 on timeout) |
@@ -171,7 +205,8 @@ repository directory name.
 | `cowork stream` | follow a room live |
 | `cowork prompt <agent> [--room <name>]` | reprint a kickoff or role prompt |
 | `cowork archive --keep 20` | move older messages out, keeping open proposals |
-| `cowork hook install\|remove\|status` | manage the editor hooks |
+| `cowork hook install\|remove [--tool claude\|codex\|kimi\|all]` | manage the editor hooks (`all` is the project's claude and codex hooks; kimi's are global and installed only by name) |
+| `cowork hook status` | show which hook files carry cowork's hooks |
 | `cowork feedback bug\|advice "..."` | send a bug report or suggestion |
 | `cowork doctor` | check PATH, project, identity, hooks, daemon, feedback endpoint |
 | `cowork intro` | the short introduction a bare `cowork` shows |

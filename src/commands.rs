@@ -41,16 +41,17 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
             cwd.display()
         ),
     };
+    // Checked before anything is written: an explicit list always, and an inherited
+    // one when it is about to become main's roster.
+    let explicit = agents.as_deref().map(config::parse_agents);
+    let main = paths::room_path(&root, "main");
+    let roster = explicit.clone().unwrap_or_else(|| agent::participants(&config::load(&root)));
+    if explicit.is_some() || !main.exists() {
+        agent::validate_roster(&roster)?;
+    }
     let Some(agent_files) = choose_agent_files(agent_files, true)? else { return Ok(()) };
-    if let Some(a) = agents {
-        let list = config::parse_agents(&a);
-        if list.len() < 2 {
-            bail!("--agents needs at least two names, e.g. --agents claude,codex");
-        }
-        for n in &list {
-            room::validate_agent(n)?;
-        }
-        config::set(&root, "agents", &a)?;
+    if let Some(list) = &explicit {
+        config::set(&root, "agents", &list.join(","))?;
     }
     let project = paths::project_at(root.clone());
     let cfg = config::load(&root);
@@ -59,7 +60,6 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
     fs::create_dir_all(paths::rooms_dir(&root))?;
     fs::create_dir_all(paths::cursors_dir(&root))?;
 
-    let main = paths::room_path(&root, "main");
     let mut created = Vec::new();
     if !main.exists() {
         let fm = FrontMatter {
@@ -81,7 +81,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
         created.push(".ai-common/PROTOCOL.md");
     }
 
-    let updated = if agent_files { write_agent_files(&project, &participants)? } else { Vec::new() };
+    let updated = if agent_files { write_agent_files(&project, &everyone(&root, &participants)?)? } else { Vec::new() };
 
     gitignore_add(&root, ".ai-common/.cursors/")?;
     registry::register(&project.name, &root)?;
@@ -95,20 +95,27 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
         }
     }
 
-    // Onboarding prompts.
+    // Onboarding prompts, for main's actual members: an agent added to the project
+    // list after main was created is pointed at its rooms instead.
+    let members = room_members(&root, "main")?;
     let mut onboarding = format!(
         "# cowork onboarding for `{}`\n\nPaste the matching prompt into each tool's session. Regenerate any time with `cowork prompt <agent>`.\n\n",
         project.name
     );
     let mut printed = String::new();
-    for a in &participants {
-        let other = agent::counterpart(a, &participants);
+    for a in &members {
+        let other = agent::counterpart(a, &members);
         let k = templates::kickoff(&root, a, &other, &project.name);
         onboarding.push_str(&format!("## {a}\n\n```\n{k}\n```\n\n"));
         printed.push_str(&format!(
             "── prompt for {a} (paste into its session; rules: {}) ──\n{k}\n\n",
             templates::rules_source(&root, a)
         ));
+    }
+    for a in participants.iter().filter(|a| !members.contains(a)) {
+        let note = not_in_main(&root, a)?;
+        onboarding.push_str(&format!("## {a}\n\n{note}\n\n"));
+        printed.push_str(&format!("── {a} ──\n{note}\n\n"));
     }
     fs::write(paths::onboarding_path(&root), &onboarding)?;
 
@@ -129,6 +136,9 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
         println!("  hooks: {}", files.join(", "));
         crate::hooks::print_trust_notes(&hooked);
     }
+    for h in crate::hooks::setup_hints(&root, &participants) {
+        println!("  {h}");
+    }
     println!("  prompts saved to .ai-common/ONBOARDING.md");
     if !quiet {
         println!();
@@ -136,6 +146,21 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
         println!("next: open each tool in this directory, paste its prompt, and let them talk.");
     }
     Ok(())
+}
+
+/// Everyone the rules files must speak for: `first` (the project's agents), then the
+/// members of every existing room. Rooms keep their rosters when the project list
+/// changes, so an agent still in a room keeps its rules block.
+pub fn everyone(root: &Path, first: &[String]) -> Result<Vec<String>> {
+    let mut all = first.to_vec();
+    for r in room_names(root)? {
+        for a in room_members(root, &r)? {
+            if !all.contains(&a) {
+                all.push(a);
+            }
+        }
+    }
+    Ok(all)
 }
 
 /// One rules block per tool file, shared by all participants that map to it.
@@ -534,12 +559,23 @@ pub fn read(a: ReadArgs) -> Result<()> {
 // ---------- wait ----------
 
 pub fn wait(a: WaitArgs) -> Result<i32> {
+    let me = agent::detect(a.me.as_deref())?;
     let cfg;
     let (project, rooms, watch_path, label): (Project, Vec<String>, std::path::PathBuf, String) = if a.all_rooms {
         let project = paths::current_project()?;
         paths::ensure_initialized(&project)?;
         cfg = config::load(&project.root);
-        let rooms = room_names(&project.root)?;
+        // Only the rooms `me` belongs to, like hook delivery: another room's posts
+        // must not wake it or give it a cursor there.
+        let mut rooms = Vec::new();
+        for r in room_names(&project.root)? {
+            if room_members(&project.root, &r)?.iter().any(|m| m == &me) {
+                rooms.push(r);
+            }
+        }
+        if rooms.is_empty() {
+            bail!("`{me}` is not a member of any room in project `{}`", project.name);
+        }
         let watch = paths::rooms_dir(&project.root);
         let label = format!("{}/*", project.name);
         (project, rooms, watch, label)
@@ -550,7 +586,6 @@ pub fn wait(a: WaitArgs) -> Result<i32> {
         let label = rr.addr();
         (rr.project.clone(), vec![rr.room.clone()], rr.path.clone(), label)
     };
-    let me = agent::detect(a.me.as_deref())?;
     let root = project.root.clone();
     let timeout = a.timeout.or(cfg.wait_timeout).unwrap_or(300);
 
@@ -604,7 +639,13 @@ pub fn wait(a: WaitArgs) -> Result<i32> {
 
 // ---------- new / list / status ----------
 
-pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>, agent_files: Option<bool>) -> Result<()> {
+pub fn new_room(
+    name: &str,
+    purpose: Option<String>,
+    executor: Option<String>,
+    agents: Option<Vec<String>>,
+    agent_files: Option<bool>,
+) -> Result<()> {
     let project = paths::current_project()?;
     paths::ensure_initialized(&project)?;
     paths::validate_room_name(name)?;
@@ -613,17 +654,34 @@ pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>, a
         bail!("room `{}` already exists in project `{}`", name, project.name);
     }
     let cfg = config::load(&project.root);
-    let participants = agent::participants(&cfg);
+    let pool = agent::participants(&cfg);
+    // The room's own roster; the project's agents when none is given. Either way it
+    // is checked before anything is written.
+    let inherited = agents.is_none();
+    let participants = agents.unwrap_or_else(|| pool.clone());
+    agent::validate_roster(&participants).map_err(|e| {
+        if inherited {
+            anyhow!("{e}: the project's agents cannot form a room; choose this room's with --agents a,b[,c]")
+        } else {
+            e
+        }
+    })?;
     let executor = match executor {
         Some(e) => {
             room::validate_agent(&e)?;
-            e.trim().to_string()
+            let e = e.trim().to_string();
+            if !participants.contains(&e) {
+                bail!("executor `{e}` is not one of this room's agents ({})", participants.join(", "));
+            }
+            e
         }
         None => participants[0].clone(),
     };
     let Some(agent_files) = choose_agent_files(agent_files, false)? else { return Ok(()) };
     if agent_files {
-        let updated = write_agent_files(&project, &participants)?;
+        let mut all = everyone(&project.root, &pool)?;
+        all.extend(participants.iter().filter(|a| !all.contains(a)).cloned().collect::<Vec<_>>());
+        let updated = write_agent_files(&project, &all)?;
         println!("  rules blocks: {}", updated.join(", "));
     }
     let fm = FrontMatter {
@@ -637,6 +695,9 @@ pub fn new_room(name: &str, purpose: Option<String>, executor: Option<String>, a
     };
     fs::write(&path, fm.render())?;
     println!("created room {}/{} (executor: {executor})", project.name, name);
+    for h in crate::hooks::setup_hints(&project.root, &participants) {
+        println!("  {h}");
+    }
     println!();
     print!("{}", room_prompts_text(&project, name)?);
     println!("saved to .ai-common/prompts/{name}.md; reprint with `cowork prompt <agent> --room {name}`");
@@ -691,6 +752,32 @@ pub fn delete_room(name: &str, yes: bool) -> Result<()> {
     Ok(())
 }
 
+/// A room's members: its front matter when present, else the project's agents.
+pub fn room_members(root: &Path, name: &str) -> Result<Vec<String>> {
+    let pool = agent::participants(&config::load(root));
+    let path = paths::room_path(root, name);
+    if !path.exists() {
+        return Ok(pool);
+    }
+    Ok(room::parse(&room::read_locked(&path)?).participants(&pool))
+}
+
+/// What to tell an agent that is on the project list but not in main: the kickoff
+/// prompt would put it in a room it cannot vote in, so name its rooms instead.
+fn not_in_main(root: &Path, agent_name: &str) -> Result<String> {
+    let mut rooms = Vec::new();
+    for r in room_names(root)? {
+        if room_members(root, &r)?.iter().any(|a| a == agent_name) {
+            rooms.push(format!("`cowork prompt {agent_name} --room {r}`"));
+        }
+    }
+    Ok(if rooms.is_empty() {
+        format!("`{agent_name}` is not a member of room main. Create a room with it (`cowork new <room> --agents ...`) and paste that room's prompt: `cowork prompt {agent_name} --room <room>`.")
+    } else {
+        format!("`{agent_name}` is not a member of room main. Paste one of its room prompts instead: {}.", rooms.join(", "))
+    })
+}
+
 /// (agent, role, prompt) for every participant of a room.
 pub fn room_prompts(project: &Project, name: &str) -> Result<Vec<(String, String, String)>> {
     let path = paths::room_path(&project.root, name);
@@ -714,11 +801,12 @@ pub fn room_prompts(project: &Project, name: &str) -> Result<Vec<(String, String
     if !participants.iter().any(|p| p == &executor) {
         participants.push(executor.clone());
     }
+    let advisors: Vec<String> = participants.iter().filter(|a| **a != executor).cloned().collect();
+    let team = templates::Team { executor: &executor, advisors: &advisors };
     let mut out = Vec::new();
     for a in &participants {
         let role = if a == &executor { "executor" } else { "advisor" };
-        let other = agent::counterpart(a, &participants);
-        let text = templates::role_prompt(&project.root, role, a, &other, &project.name, name);
+        let text = templates::role_prompt(&project.root, role, a, &team, &project.name, name);
         out.push((a.clone(), role.to_string(), text));
     }
     Ok(out)
@@ -1092,7 +1180,6 @@ pub fn prompt(agent_name: &str, rules: bool, copy: bool, room_name: Option<&str>
     let project = paths::current_project()?;
     let cfg = config::load(&project.root);
     let parts = agent::participants(&cfg);
-    let other = agent::counterpart(agent_name, &parts);
     let text = if let Some(r) = room_name {
         room_prompts(&project, r)?
             .into_iter()
@@ -1100,9 +1187,14 @@ pub fn prompt(agent_name: &str, rules: bool, copy: bool, room_name: Option<&str>
             .map(|(_, _, t)| t)
             .ok_or_else(|| anyhow!("`{agent_name}` is not a participant of room `{r}`"))?
     } else if rules {
-        templates::rules(&project.root, agent_name, &other, &project.name)
+        templates::rules(&project.root, agent_name, &agent::counterpart(agent_name, &parts), &project.name)
     } else {
-        templates::kickoff(&project.root, agent_name, &other, &project.name)
+        // The kickoff prompt places the agent in main, so it is only for main's members.
+        let members = room_members(&project.root, "main")?;
+        if paths::is_initialized(&project.root) && !members.iter().any(|a| a == agent_name) {
+            bail!("{}", not_in_main(&project.root, agent_name)?);
+        }
+        templates::kickoff(&project.root, agent_name, &agent::counterpart(agent_name, &members), &project.name)
     };
     if copy {
         let tool = copy_to_clipboard(&text)?;
@@ -1317,13 +1409,19 @@ pub fn doctor() -> Result<()> {
                     let has = fs::read_to_string(&f).map(|s| s.contains(templates::START) || s.contains(templates::LEGACY_START)).unwrap_or(false);
                     line(has, true, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("optional rules block for {a} absent from {}; using .ai-common/PROTOCOL.md (add with `cowork init --agent-files`)", templates::rules_file(&a)) });
                 }
+                let everyone = everyone(&p.root, &agent::participants(&cfg)).unwrap_or_default();
                 for t in ["claude", "codex"] {
-                    if agent::participants(&cfg).iter().any(|a| a == t) {
+                    if everyone.iter().any(|a| a == t) {
                         let has = crate::hooks::installed(&p.root, t);
                         let f = crate::hooks::hook_file(&p.root, t);
                         let f = f.strip_prefix(&p.root).map(|x| x.display().to_string()).unwrap_or_default();
                         line(has, false, if has { format!("room hooks for {t} installed in {f}") } else { format!("room hooks for {t} missing from {f}; run `cowork hook install`") });
                     }
+                }
+                if everyone.iter().any(|a| a == "kimi") {
+                    let has = crate::hooks::installed(&p.root, "kimi");
+                    let f = crate::hooks::kimi_config_path().display().to_string();
+                    line(has, true, if has { format!("room hooks for kimi installed in {f} (global)") } else { format!("room hooks for kimi not installed; optional, global: `cowork hook install --tool kimi` writes {f}") });
                 }
                 let reg = registry::lookup(&p.name).is_some();
                 line(reg, false, if reg { "project registered for cross-project addressing".into() } else { "project not in registry; run `cowork init` again".into() });

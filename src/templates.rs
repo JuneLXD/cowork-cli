@@ -34,7 +34,7 @@ This project uses the `cowork` CLI to coordinate agents through a shared, locked
 
 const KICKOFF: &str = "You are `{agent}` in room `{project}/main`, coordinating with `{other}` through the `cowork` CLI. Run `cowork read` now, then reply to any handoff addressed to you before starting new work. Follow the cowork rules in `{rules_source}`. If `cowork` reports your identity as unknown, run commands as `COWORK_AGENT={agent} cowork ...`. cowork is alpha software: report a bug with `cowork feedback bug \"what happened\"` or a suggestion with `cowork feedback advice \"what would help\"` (sent only when you run it).\n\n{tool_tips}";
 
-const ADVISOR: &str = r#"You are `{agent}`, the ADVISOR in room `{project}/{room}`, working with `{other}` (the executor). You read, suggest, and vote. You never change files in this repository; `{other}` makes every change. Your job is to catch mistakes early, propose better options, and keep `{other}` unblocked.
+const ADVISOR: &str = r#"You are `{agent}`, the ADVISOR in room `{project}/{room}`, working with `{other}` (the executor). You read, suggest, and vote. You never change files in this repository; `{other}` makes every change. Your job is to catch mistakes early, propose better options, and keep `{other}` unblocked.{team_note}
 
 How to work
 1. Start with `cowork read --room {room}`. Reply to anything addressed to you before doing anything else.
@@ -56,15 +56,15 @@ Commands
 {tool_tips}
 Project-wide cowork rules are in `{rules_source}`."#;
 
-const EXECUTOR: &str = r#"You are `{agent}`, the EXECUTOR in room `{project}/{room}`, working with `{other}` (the advisor). You read, suggest, vote, and make the changes. You are the only one who edits files in this repository.
+const EXECUTOR: &str = r#"You are `{agent}`, the EXECUTOR in room `{project}/{room}`, working with {advisors}. You read, suggest, vote, and make the changes. You are the only one who edits files in this repository.{team_note}
 
 How to work
 1. Start with `cowork read --room {room}`. Act on anything addressed to you first.
 2. Before every change, post the plan as a proposal: `cowork post --room {room} --propose --thoughts "why" --action "exactly what you will change, which files"`. It prints the proposal id.
-3. Then `cowork wait --room {room} --timeout 600` for `{other}`'s vote; `cowork status --room {room}` shows whether it is approved.
+3. Then `cowork wait --room {room} --timeout 600` for {advisor_or}'s vote; `cowork status --room {room}` shows whether it is approved.
    - Approved: make the change, post progress with `--re <id> --taken "what you changed, files touched"`, and when it is finished close it with `--complete --re <id>`. Any question goes in --handoff.
    - Rejected: revise the plan using the reason given and propose again with `--propose --re <id>`, which supersedes the old one.
-4. When `{other}` posts a proposal, vote on it with `--re <its id> --vote "approve: reason"` or `"reject: reason"`.
+4. When {advisor_or} posts a proposal, vote on it with `--re <its id> --vote "approve: reason"` or `"reject: reason"`.
 5. Keep each change small enough to review in one message. Never post "applying approved #N" or a bare confirmation: post once with `--re N --taken` when there is progress and `--complete --re N` when done, and never re-request a vote that `cowork status` shows as approved. Aim for under about 200 words per post; when a longer explanation is needed, prefer pointing at an existing design or code file by path. Never edit `.ai-common/rooms/` by hand. A direct instruction from the user overrides this loop; say so in --thoughts of the post that acts on it.
 
 Commands
@@ -99,14 +99,14 @@ log before working and posts after each unit of work. Nobody edits the log by ha
 4. Wait, do not poll. `cowork wait` blocks until the counterpart posts.
 5. One topic per room. `cowork new <name>` creates a side room. Keep `main` for coordination.
 6. Never edit files under `.ai-common/rooms/` directly. The CLI owns the format.
-7. Every room has one executor and one or more advisors. The executor proposes each
-   change with `--propose`, waits for a vote, and only then edits files. Advisors review
-   and vote on the proposal id: `--re <id> --vote "approve: reason"` or `"reject: reason"`.
-   A proposal is approved by one approve and blocked by any reject; only the latest vote
-   per voter counts, and votes on your own proposal or without `--re` are informational.
-   The executor closes finished work with `--complete --re <id>`; a revised plan is
-   `--propose --re <id>`. `cowork status` lists every open proposal. Advisors never edit
-   files. `cowork prompt <agent> --room <room>` prints the role prompt.
+7. Every room has two or three agents: one executor and one or two advisors. The executor
+   proposes each change with `--propose`, waits for a vote, and only then edits files.
+   Advisors review and vote on the proposal id: `--re <id> --vote "approve: reason"` or
+   `"reject: reason"`. A proposal is approved by one approve and blocked by any reject; only
+   the latest vote per voter counts, and votes on your own proposal or without `--re` are
+   informational. The executor closes finished work with `--complete --re <id>`; a revised
+   plan is `--propose --re <id>`. `cowork status` lists every open proposal. Advisors never
+   edit files. `cowork prompt <agent> --room <room>` prints the role prompt.
 8. A direct instruction from the user overrides the vote loop; the post that acts on it
    says so.
 
@@ -137,7 +137,7 @@ log before working and posts after each unit of work. Nobody edits the log by ha
 
 const TIPS_CLAUDE: &str = r#"Claude Code specifics
 - Hooks are installed in `.claude/settings.json`: when you finish a turn, `cowork hook stop` waits briefly and hands you any new message as your next instruction, and before each user prompt unread messages are added to your context. You do not need to poll.
-- To keep working while you wait for `{other}`, run `cowork wait --room {room} --timeout 600` with `run_in_background: true`; you get a task notification the moment `{other}` posts, and background commands have no timeout.
+- To keep working while you wait for a reply, run `cowork wait --room {room} --timeout 600` with `run_in_background: true`; you get a task notification the moment another agent posts, and background commands have no timeout.
 - Foreground commands time out after 10 minutes, so never use a `--timeout` above 600 in the foreground.
 - For multi-line posts use a heredoc: `cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
 
@@ -146,6 +146,13 @@ const TIPS_CODEX: &str = r#"Codex specifics
 - Run `cowork wait --room {room} --timeout 120` in a loop rather than one long wait, so a shell timeout never kills it; exit code 2 just means "nothing yet", read and wait again.
 - If `cowork` says it cannot tell who you are, prefix every command with `COWORK_AGENT={agent}`.
 - For multi-line posts use a heredoc: `cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
+
+const TIPS_KIMI: &str = r#"Kimi Code specifics
+- cowork cannot tell a Kimi Code shell from any other shell, so prefix every command with `COWORK_AGENT={agent}`, e.g. `COWORK_AGENT={agent} cowork read --room {room}`.
+- To wait for a reply, start `COWORK_AGENT={agent} cowork wait --room {room} --timeout 600` with the Bash tool's `run_in_background=true`, `disable_timeout=true`, and `description="Wait for cowork messages"`. When you have nothing else to do, call `WaitFor` with that `task_id` and `timeout=600` to keep waiting inside this turn; without `WaitFor`, you are notified when the task finishes. In the foreground use `--timeout 50`, under the shell tool's 60-second default. Exit code 2 means nothing arrived yet: read and wait again.
+- Keep one wait running at a time. Each `cowork wait` or `cowork read` moves your read position, so a second one can take the message the first was waiting for.
+- If the user has run `cowork hook install --tool kimi`, unread messages are added before each user prompt, and when you end a turn a new message can be handed to you once more in that turn. Nothing else arrives on its own, so keep waiting as above.
+- For multi-line posts use a heredoc: `COWORK_AGENT={agent} cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
 
 const TIPS_GENERIC: &str = r#"Tool specifics
 - Loop with `cowork wait --room {room} --timeout 120`; exit code 2 means nothing arrived yet, so read and wait again.
@@ -156,6 +163,7 @@ pub fn tool_tips(agent: &str) -> &'static str {
     match agent.to_ascii_lowercase().as_str() {
         "claude" => TIPS_CLAUDE,
         "codex" => TIPS_CODEX,
+        "kimi" => TIPS_KIMI,
         _ => TIPS_GENERIC,
     }
 }
@@ -187,12 +195,56 @@ fn fill(root: &Path, tpl: &str, agent: &str, other: &str, project: &str) -> Stri
         .replace("{room}", "main")
 }
 
-/// Role prompt for a room: `role` is "advisor" or "executor".
-pub fn role_prompt(root: &Path, role: &str, agent: &str, other: &str, project: &str, room: &str) -> String {
-    let builtin = if role == "executor" { EXECUTOR } else { ADVISOR };
+/// Who holds which role in a room.
+pub struct Team<'a> {
+    pub executor: &'a str,
+    pub advisors: &'a [String],
+}
+
+/// "`a`", "`a` and `b`", "`a`, `b` and `c`" (with `or` in place of `and` when asked).
+fn names(list: &[&str], conj: &str) -> String {
+    let quoted: Vec<String> = list.iter().map(|a| format!("`{a}`")).collect();
+    match quoted.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} {conj} {last}", rest.join(", ")),
+    }
+}
+
+/// Role prompt for a room: `role` is "advisor" or "executor". With one advisor
+/// the text reads as it always has; with several, each role names the others and
+/// the executor is told how their votes combine.
+pub fn role_prompt(root: &Path, role: &str, agent: &str, team: &Team, project: &str, room: &str) -> String {
+    let advisors: Vec<&str> = team.advisors.iter().map(String::as_str).collect();
+    let (builtin, other, team_note) = if role == "executor" {
+        let note = if advisors.len() > 1 {
+            " A proposal is approved by one advisor's approve and blocked by any advisor's reject, so you do not need every vote.".to_string()
+        } else {
+            String::new()
+        };
+        (EXECUTOR, advisors.join(", "), note)
+    } else {
+        let peers: Vec<&str> = advisors.iter().copied().filter(|a| !a.eq_ignore_ascii_case(agent)).collect();
+        let note = match peers.len() {
+            0 => String::new(),
+            1 => format!(" {} is a fellow advisor: it also reviews and votes, and never edits files. One approve from any advisor approves a proposal; any reject blocks it.", names(&peers, "and")),
+            _ => format!(" {} are fellow advisors: they also review and vote, and never edit files. One approve from any advisor approves a proposal; any reject blocks it.", names(&peers, "and")),
+        };
+        (ADVISOR, team.executor.to_string(), note)
+    };
+    let with = if advisors.len() > 1 {
+        format!("{} (the advisors)", names(&advisors, "and"))
+    } else {
+        format!("{} (the advisor)", names(&advisors, "and"))
+    };
     let tpl = override_tpl(root, &format!("{role}.md")).unwrap_or_else(|| builtin.to_string());
-    let tpl = tpl.replace("{tool_tips}", tool_tips(agent)).replace("{room}", room);
-    fill(root, &tpl, agent, other, project).trim_end().to_string()
+    let tpl = tpl
+        .replace("{tool_tips}", tool_tips(agent))
+        .replace("{room}", room)
+        .replace("{team_note}", &team_note)
+        .replace("{advisors}", &with)
+        .replace("{advisor_or}", &names(&advisors, "or"));
+    fill(root, &tpl, agent, &other, project).trim_end().to_string()
 }
 
 fn override_tpl(root: &Path, name: &str) -> Option<String> {

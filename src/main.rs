@@ -26,7 +26,9 @@ fn run(cli: Cli) -> Result<i32> {
         Some(Cmd::Post(a)) => commands::post(a).map(|_| 0),
         Some(Cmd::Read(a)) => commands::read(a).map(|_| 0),
         Some(Cmd::Wait(a)) => commands::wait(a),
-        Some(Cmd::New { name, purpose, executor, agent_files }) => commands::new_room(&name, purpose, executor, agent_files.choice()).map(|_| 0),
+        Some(Cmd::New { name, purpose, executor, agents, agent_files }) => {
+            commands::new_room(&name, purpose, executor, agents.as_deref().map(config::parse_agents), agent_files.choice()).map(|_| 0)
+        }
         Some(Cmd::Delete { name, yes }) => commands::delete_room(&name, yes).map(|_| 0),
         Some(Cmd::Stream { room, last, json }) => commands::stream(room, last, json).map(|_| 0),
         Some(Cmd::List { all }) => commands::list(all).map(|_| 0),
@@ -38,14 +40,13 @@ fn run(cli: Cli) -> Result<i32> {
         Some(Cmd::Daemon { action }) => commands::daemon_cmd(action).map(|_| 0),
         Some(Cmd::Doctor) => commands::doctor().map(|_| 0),
         Some(Cmd::Hook { action }) => match action {
-            HookCmd::Install { tool } => hooks::install(tool.as_deref()),
-            HookCmd::Remove { tool } => hooks::remove(tool.as_deref()),
-            HookCmd::Status => hooks::status(),
-            HookCmd::Stop { agent, timeout } => hooks::stop(agent.as_deref(), timeout),
-            HookCmd::Prompt { agent } => hooks::prompt(agent.as_deref()),
-            HookCmd::Session { agent } => hooks::session(agent.as_deref()),
-        }
-        .map(|_| 0),
+            HookCmd::Install { tool } => hooks::install(tool.as_deref()).map(|_| 0),
+            HookCmd::Remove { tool } => hooks::remove(tool.as_deref()).map(|_| 0),
+            HookCmd::Status => hooks::status().map(|_| 0),
+            HookCmd::Stop { agent, timeout, format } => hooks::stop(agent.as_deref(), timeout, &format),
+            HookCmd::Prompt { agent, format } => hooks::prompt(agent.as_deref(), &format).map(|_| 0),
+            HookCmd::Session { agent } => hooks::session(agent.as_deref()).map(|_| 0),
+        },
         Some(Cmd::Feedback { action }) => feedback::run(action),
         Some(Cmd::Intro) => {
             intro::print();

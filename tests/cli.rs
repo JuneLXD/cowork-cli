@@ -46,6 +46,7 @@ impl Project {
             .env("COWORK_AGENT", agent)
             .env("XDG_DATA_HOME", self.root.join("xdg-data"))
             .env("XDG_RUNTIME_DIR", self.root.join("xdg-run"))
+            .env("KIMI_CODE_HOME", self.root.join("kimi-home"))
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .env_remove("ROOM_ID")
@@ -1286,4 +1287,479 @@ fn bare_cowork_starts_with_the_intro_and_intro_replays_it() {
     let status = p.ok("claude", &["status", "--json"]);
     assert!(status.trim_start().starts_with('['), "{status}");
     assert!(!p.ok("claude", &["read", "--last", "1"]).contains("helps coding agents"));
+}
+
+// ---------- kimi and room rosters ----------
+
+fn room_status_json(p: &Project, room: &str) -> serde_json::Value {
+    let text = p.ok("claude", &["status", "--room", room, "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    v[0].clone()
+}
+
+#[test]
+fn three_agent_role_prompts_name_one_executor_and_the_fellow_advisor() {
+    let p = Project::with_agents("trio-prompts", Some("claude,codex,kimi"));
+    p.ok("claude", &["new", "trio", "--executor", "claude"]);
+    let ex = p.ok("claude", &["prompt", "claude", "--room", "trio"]);
+    for phrase in [
+        "working with `codex` and `kimi` (the advisors)",
+        "approved by one advisor's approve and blocked by any advisor's reject",
+        "for `codex` or `kimi`'s vote",
+        "When `codex` or `kimi` posts a proposal",
+    ] {
+        assert!(ex.contains(phrase), "executor prompt lacks `{phrase}`:\n{ex}");
+    }
+    for (me, peer) in [("codex", "kimi"), ("kimi", "codex")] {
+        let ad = p.ok("claude", &["prompt", me, "--room", "trio"]);
+        assert!(ad.contains("working with `claude` (the executor)") && ad.contains("`claude` makes every change"), "{me}:\n{ad}");
+        assert!(ad.contains(&format!("`{peer}` is a fellow advisor")), "{me} names {peer}:\n{ad}");
+        assert!(!ad.contains("`codex, kimi`") && !ad.contains("`claude, "), "{me} sees one executor:\n{ad}");
+    }
+    let kimi = p.ok("claude", &["prompt", "kimi", "--room", "trio"]);
+    assert!(kimi.contains("Kimi Code specifics") && kimi.contains("COWORK_AGENT=kimi cowork wait --room trio"), "{kimi}");
+    let kickoff = p.ok("claude", &["prompt", "kimi"]);
+    assert!(kickoff.contains("Kimi Code specifics") && kickoff.contains("COWORK_AGENT=kimi cowork read --room main"), "{kickoff}");
+    // Two-agent rooms read as before.
+    p.ok("claude", &["new", "duo", "--agents", "claude,codex"]);
+    let ex2 = p.ok("claude", &["prompt", "claude", "--room", "duo"]);
+    assert!(ex2.contains("working with `codex` (the advisor). ") && ex2.contains("for `codex`'s vote"), "{ex2}");
+    assert!(!ex2.contains("advisors") && !ex2.contains("fellow advisor"), "{ex2}");
+    let ad2 = p.ok("claude", &["prompt", "codex", "--room", "duo"]);
+    assert!(!ad2.contains("fellow advisor"), "{ad2}");
+}
+
+#[test]
+fn new_agents_sets_this_rooms_roster_only() {
+    let p = Project::new("roster-new");
+    p.ok("claude", &["new", "pair", "--agents", "claude, kimi", "--executor", "kimi"]);
+    let text = fs::read_to_string(p.root.join(".ai-common/rooms/pair.md")).unwrap();
+    assert!(text.contains("participants: claude, kimi\n") && text.contains("executor: kimi\n"), "{text}");
+    assert!(p.ok("claude", &["prompt", "claude", "--room", "pair"]).contains("working with `kimi` (the executor)"));
+    assert!(!p.run("claude", &["prompt", "codex", "--room", "pair"], None).status.success(), "codex is not in this room");
+    // The project's own list and main are untouched.
+    assert!(!p.ok("claude", &["config", "get", "agents"]).contains("kimi"));
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex\n"));
+}
+
+#[test]
+fn bad_rosters_are_rejected_before_anything_is_written() {
+    let p = Project::new("roster-bad");
+    let cases: &[(&[&str], &str)] = &[
+        (&["--agents", "claude"], "2 to 3 agents"),
+        (&["--agents", "claude,codex,kimi,gemini"], "2 to 3 agents"),
+        (&["--agents", "claude,Claude"], "listed twice"),
+        (&["--agents", "claude,kimi", "--executor", "codex"], "not one of this room's agents"),
+        (&["--executor", "kimi"], "not one of this room's agents"),
+    ];
+    for (i, (extra, why)) in cases.iter().enumerate() {
+        let name = format!("bad{i}");
+        let mut args = vec!["new", name.as_str()];
+        args.extend_from_slice(extra);
+        let out = p.run("claude", &args, None);
+        assert!(!out.status.success(), "{args:?} should fail");
+        assert!(String::from_utf8_lossy(&out.stderr).contains(why), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!p.root.join(format!(".ai-common/rooms/{name}.md")).exists(), "{args:?} left a room");
+        assert!(!p.root.join(format!(".ai-common/prompts/{name}.md")).exists(), "{args:?} left prompts");
+    }
+    // An inherited project list is checked the same way.
+    p.ok("claude", &["config", "set", "agents", "claude,codex,kimi,gemini"]);
+    let out = p.run("claude", &["new", "inherited"], None);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("2 to 3 agents"));
+    assert!(!p.root.join(".ai-common/rooms/inherited.md").exists());
+}
+
+#[test]
+fn hooks_deliver_only_rooms_the_agent_belongs_to() {
+    let p = Project::new("roster-hooks");
+    p.ok("claude", &["new", "pair", "--agents", "claude,kimi"]);
+    p.ok("kimi", &["post", "--room", "pair", "--thoughts", "kimi only talks to claude here"]);
+    let cwd = format!("{{\"cwd\": {:?}}}", p.root.to_string_lossy());
+    let codex = p.run("codex", &["hook", "prompt", "--agent", "codex"], Some(&cwd));
+    assert!(!String::from_utf8_lossy(&codex.stdout).contains("kimi only talks"), "codex is not in pair");
+    let stop = p.run("codex", &["hook", "stop", "--agent", "codex", "--timeout", "1"], Some(&cwd));
+    assert!(stop.stdout.is_empty(), "no stop block for a non-member: {}", String::from_utf8_lossy(&stop.stdout));
+    let session = String::from_utf8_lossy(&p.run("codex", &["hook", "session", "--agent", "codex"], Some(&cwd)).stdout).to_string();
+    assert!(session.contains("room `main`") && !session.contains("room `pair`"), "{session}");
+    let claude = p.run("claude", &["hook", "prompt", "--agent", "claude"], Some(&cwd));
+    assert!(String::from_utf8_lossy(&claude.stdout).contains("kimi only talks"), "claude is in pair");
+    let session = String::from_utf8_lossy(&p.run("kimi", &["hook", "session", "--agent", "kimi"], Some(&cwd)).stdout).to_string();
+    assert!(session.contains("room `pair`") && !session.contains("room `main`"), "kimi is in pair, not main: {session}");
+    // Manual reads are unchanged: anyone can still look.
+    assert!(p.ok("codex", &["read", "--room", "pair", "--last", "1"]).contains("kimi only talks"));
+}
+
+#[test]
+fn three_agent_votes_one_approve_approves_and_any_reject_blocks() {
+    let p = Project::with_agents("trio-votes", Some("claude,codex,kimi"));
+    p.ok("claude", &["new", "trio", "--executor", "claude"]);
+    p.ok("claude", &["post", "--room", "trio", "--propose", "--thoughts", "t", "--action", "x"]);
+    assert_eq!(proposal(&room_status_json(&p, "trio"), 1)["waiting_for"], serde_json::json!(["codex", "kimi"]));
+    p.ok("kimi", &["post", "--room", "trio", "--re", "1", "--vote", "approve: fine"]);
+    let s = room_status_json(&p, "trio");
+    assert_eq!(proposal(&s, 1)["state"], "approved");
+    assert_eq!(proposal(&s, 1)["waiting_for"], serde_json::json!(["codex"]));
+    p.ok("codex", &["post", "--room", "trio", "--re", "1", "--vote", "reject: missing tests"]);
+    assert_eq!(proposal(&room_status_json(&p, "trio"), 1)["state"], "rejected");
+}
+
+#[test]
+fn kimi_wait_sees_later_posts_skips_its_own_and_keeps_its_own_cursor() {
+    let p = Project::with_agents("trio-wait", Some("claude,codex,kimi"));
+    p.ok("claude", &["new", "trio"]);
+    p.ok("kimi", &["post", "--room", "trio", "--thoughts", "hello from kimi"]);
+    let out = p.run("kimi", &["wait", "--room", "trio", "--timeout", "1"], None);
+    assert_eq!(out.status.code(), Some(2), "own post does not wake kimi");
+    // A post that lands while kimi is already waiting.
+    let child = p
+        .cmd("kimi")
+        .args(["wait", "--room", "trio", "--timeout", "10"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    p.ok("codex", &["post", "--room", "trio", "--thoughts", "later from codex"]);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("later from codex") && !text.contains("hello from kimi"), "{text}");
+    assert_eq!(p.run("kimi", &["wait", "--room", "trio", "--timeout", "1"], None).status.code(), Some(2), "cursor advanced");
+    // codex's cursor is its own: it still has kimi's post to read.
+    let codex = p.ok("codex", &["read", "--room", "trio"]);
+    assert!(codex.contains("hello from kimi") && !codex.contains("later from codex"), "{codex}");
+    let cursors = p.root.join(".ai-common/.cursors");
+    assert!(cursors.join("kimi/trio").exists() && cursors.join("codex/trio").exists());
+}
+
+#[test]
+fn init_checks_the_roster_before_writing_anything() {
+    for list in ["claude", "claude,codex,kimi,gemini", "claude,Claude"] {
+        let p = Project::uninitialized("init-roster");
+        let out = p.run("claude", &["init", "--quiet", "--agents", list], None);
+        assert!(!out.status.success(), "{list} should fail");
+        assert!(!p.root.join(".ai-common").exists(), "{list} wrote files");
+        assert!(!p.root.join("AGENTS.md").exists() && !p.root.join(".claude").exists(), "{list} wrote files");
+    }
+    // An inherited list is checked when it is about to become main's roster.
+    let p = Project::uninitialized("init-inherited");
+    fs::create_dir_all(p.root.join(".ai-common")).unwrap();
+    fs::write(p.root.join(".ai-common/room.toml"), "agents = [\"claude\", \"codex\", \"kimi\", \"gemini\"]\n").unwrap();
+    let out = p.run("claude", &["init", "--quiet"], None);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("2 to 3 agents"));
+    assert!(!p.root.join(".ai-common/rooms/main.md").exists());
+    // Three is fine.
+    let p = Project::with_agents("init-trio", Some("claude,codex,kimi"));
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex, kimi\n"));
+}
+
+#[test]
+fn kickoff_prompts_are_only_for_mains_members() {
+    let p = Project::new("kickoff-members");
+    p.ok("claude", &["config", "set", "agents", "claude,codex,kimi"]);
+    let out = p.run("claude", &["prompt", "kimi"], None);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("not a member of room main") && err.contains("cowork new"), "{err}");
+    p.ok("claude", &["new", "pair", "--agents", "claude,kimi"]);
+    let err = String::from_utf8_lossy(&p.run("claude", &["prompt", "kimi"], None).stderr).to_string();
+    assert!(err.contains("`cowork prompt kimi --room pair`"), "{err}");
+    assert!(p.ok("claude", &["prompt", "codex"]).contains("You are `codex` in room"));
+    // Re-running init leaves main's roster alone and does not hand kimi a main prompt.
+    p.ok("claude", &["init", "--quiet", "--no-agent-files"]);
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex\n"));
+    let onboarding = fs::read_to_string(p.root.join(".ai-common/ONBOARDING.md")).unwrap();
+    assert!(onboarding.contains("## codex") && onboarding.contains("## kimi"), "{onboarding}");
+    assert!(!onboarding.contains("You are `kimi` in room") && onboarding.contains("cowork prompt kimi --room pair"), "{onboarding}");
+}
+
+#[test]
+fn agent_files_keep_speaking_for_agents_still_in_rooms() {
+    let p = Project::new("files-union");
+    p.ok("claude", &["new", "side", "--agents", "codex,kimi", "--no-agent-files"]);
+    p.ok("claude", &["init", "--quiet", "--agents", "claude,kimi", "--agent-files"]);
+    let agents_md = fs::read_to_string(p.root.join("AGENTS.md")).unwrap();
+    assert!(agents_md.contains("`codex`") && agents_md.contains("`kimi`"), "codex is still in main and side:\n{agents_md}");
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex\n"));
+    let side = fs::read_to_string(p.root.join(".ai-common/rooms/side.md")).unwrap();
+    assert!(side.contains("participants: codex, kimi\n"), "{side}");
+}
+
+// ---------- kimi code hooks ----------
+
+fn kimi_config(p: &Project) -> PathBuf {
+    p.root.join("kimi-home/config.toml")
+}
+
+const USER_KIMI_CONFIG: &str = "# my settings\ndefault_model = \"k2\"\n\n[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ncommand = \"node check.mjs\"\ntimeout = 5\n";
+
+#[test]
+fn kimi_hooks_are_installed_only_when_named_and_keep_the_users_config() {
+    let p = Project::with_agents("kimi-install", Some("claude,codex,kimi"));
+    assert!(!p.root.join("kimi-home").exists(), "init never writes the global kimi config");
+    let out = p.ok("claude", &["hook", "install"]);
+    assert!(!p.root.join("kimi-home").exists(), "a default install leaves it alone too");
+    assert!(out.contains("cowork hook install --tool kimi"), "{out}");
+    p.ok("claude", &["hook", "install", "--tool", "all"]);
+    assert!(!p.root.join("kimi-home").exists(), "`all` means the project-level tools");
+
+    fs::create_dir_all(p.root.join("kimi-home")).unwrap();
+    fs::write(kimi_config(&p), USER_KIMI_CONFIG).unwrap();
+    p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+    let text = fs::read_to_string(kimi_config(&p)).unwrap();
+    assert!(text.starts_with(USER_KIMI_CONFIG), "user text is kept verbatim:\n{text}");
+    let cfg: toml::Table = text.parse().unwrap();
+    let hooks = cfg["hooks"].as_array().unwrap();
+    assert_eq!(hooks.len(), 3);
+    let ours: Vec<&toml::Table> = hooks.iter().map(|h| h.as_table().unwrap()).filter(|h| h["command"].as_str().unwrap().starts_with("cowork hook ")).collect();
+    let events: Vec<&str> = ours.iter().map(|h| h["event"].as_str().unwrap()).collect();
+    assert_eq!(events, ["Stop", "UserPromptSubmit"]);
+    for h in &ours {
+        assert!(h.keys().all(|k| ["event", "matcher", "command", "timeout"].contains(&k.as_str())), "{h:?}");
+        assert!(h["command"].as_str().unwrap().contains("--agent kimi --format kimi"), "{h:?}");
+        assert!(h["timeout"].as_integer().unwrap() <= 600, "{h:?}");
+    }
+    assert_eq!(ours[0]["command"].as_str().unwrap(), "cowork hook stop --agent kimi --format kimi --timeout 120");
+    assert_eq!(ours[0]["timeout"].as_integer(), Some(150));
+
+    p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+    assert_eq!(fs::read_to_string(kimi_config(&p)).unwrap(), text, "reinstall is byte-identical");
+    let status = p.ok("claude", &["hook", "status"]);
+    assert!(status.lines().any(|l| l.starts_with("kimi") && l.contains("installed") && l.contains("(global)")), "{status}");
+
+    p.ok("claude", &["hook", "remove"]);
+    assert_eq!(fs::read_to_string(kimi_config(&p)).unwrap(), text, "a default remove leaves kimi alone");
+    p.ok("claude", &["hook", "remove", "--tool", "kimi"]);
+    assert_eq!(fs::read_to_string(kimi_config(&p)).unwrap(), USER_KIMI_CONFIG, "remove restores the user's file exactly");
+
+    // A long hook_wait is capped under Kimi Code's 600-second hook limit.
+    p.ok("claude", &["config", "set", "hook_wait", "900"]);
+    p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+    let cfg: toml::Table = fs::read_to_string(kimi_config(&p)).unwrap().parse().unwrap();
+    let stop = cfg["hooks"].as_array().unwrap().iter().map(|h| h.as_table().unwrap()).find(|h| h["event"].as_str() == Some("Stop") && h["command"].as_str().unwrap().starts_with("cowork")).unwrap().clone();
+    assert!(stop["command"].as_str().unwrap().ends_with("--timeout 570") && stop["timeout"].as_integer() == Some(600), "{stop:?}");
+}
+
+#[test]
+fn kimi_hook_install_refuses_configs_it_cannot_edit_safely() {
+    let p = Project::with_agents("kimi-refuse", Some("claude,codex,kimi"));
+    fs::create_dir_all(p.root.join("kimi-home")).unwrap();
+    let block = "# cowork:start (managed by cowork)\n[[hooks]]\nevent = \"Stop\"\ncommand = \"cowork hook stop --agent kimi --format kimi\"\n# cowork:end\n";
+    let cases = [
+        ("invalid TOML", "model = = \"k2\"\n".to_string()),
+        ("inline hooks", "hooks = []\n".to_string()),
+        ("hooks not tables", "hooks = [1, 2]\n".to_string()),
+        ("start without end", "# cowork:start\n[[hooks]]\nevent = \"Stop\"\ncommand = \"x\"\n".to_string()),
+        ("two blocks", format!("{block}\n{block}")),
+        ("stray cowork entry", "[[hooks]]\nevent = \"Stop\"\ncommand = \"cowork hook stop --agent kimi\"\n".to_string()),
+    ];
+    for (what, text) in &cases {
+        fs::write(kimi_config(&p), text).unwrap();
+        for action in ["install", "remove"] {
+            let out = p.run("claude", &["hook", action, "--tool", "kimi"], None);
+            // Remove has nothing to do in a valid file without a cowork block.
+            if action == "install" || *what != "inline hooks" {
+                assert!(!out.status.success(), "{what}: {action} should fail");
+                assert!(String::from_utf8_lossy(&out.stderr).contains("left unchanged"), "{what}: {}", String::from_utf8_lossy(&out.stderr));
+            }
+            assert_eq!(&fs::read_to_string(kimi_config(&p)).unwrap(), text, "{what}: {action} changed the file");
+        }
+    }
+    // A config that cannot be read is an error, never an empty file to overwrite.
+    fs::remove_file(kimi_config(&p)).unwrap();
+    fs::create_dir(kimi_config(&p)).unwrap();
+    let out = p.run("claude", &["hook", "install", "--tool", "kimi"], None);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("cannot read"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(kimi_config(&p).is_dir());
+}
+
+#[test]
+fn kimi_hooks_speak_exit_code_two_and_plain_text() {
+    let p = Project::with_agents("kimi-protocol", Some("claude,codex,kimi"));
+    let payload = format!("{{\"hook_event_name\": \"Stop\", \"session_id\": \"s1\", \"cwd\": {:?}, \"stop_hook_active\": false}}", p.root.to_string_lossy());
+    // Nothing unread: allow the stop, silently.
+    p.ok("kimi", &["read"]);
+    let out = p.run("kimi", &["hook", "stop", "--agent", "kimi", "--format", "kimi", "--timeout", "1"], Some(&payload));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty() && out.stderr.is_empty(), "silent timeout");
+    // A message that arrives while the hook waits: exit 2, reason on stderr, nothing on stdout.
+    let mut child = p
+        .cmd("kimi")
+        .args(["hook", "stop", "--agent", "kimi", "--format", "kimi", "--timeout", "10"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    p.post("codex", "kimi, please review a.rs");
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("kimi, please review a.rs"));
+    // Delivered once: the next stop is quiet again.
+    let out = p.run("kimi", &["hook", "stop", "--agent", "kimi", "--format", "kimi", "--timeout", "1"], Some(&payload));
+    assert_eq!(out.status.code(), Some(0));
+    // UserPromptSubmit: plain text on stdout, not JSON.
+    p.post("claude", "kimi, one more thing");
+    let out = p.run("kimi", &["hook", "prompt", "--agent", "kimi", "--format", "kimi"], Some(&payload));
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("kimi, one more thing") && !text.trim_start().starts_with('{'), "{text}");
+    // Claude and Codex keep their JSON.
+    p.post("kimi", "for claude");
+    let out = p.run("claude", &["hook", "prompt", "--agent", "claude"], Some(&payload));
+    assert!(String::from_utf8_lossy(&out.stdout).trim_start().starts_with('{'));
+}
+
+#[test]
+fn a_global_hook_returns_at_once_where_its_agent_is_in_no_room() {
+    let p = Project::new("kimi-outsider");
+    let payload = format!("{{\"cwd\": {:?}}}", p.root.to_string_lossy());
+    p.post("codex", "not for kimi");
+    let start = std::time::Instant::now();
+    let out = p.run("kimi", &["hook", "stop", "--agent", "kimi", "--format", "kimi"], Some(&payload));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty() && out.stdout.is_empty());
+    assert!(start.elapsed() < std::time::Duration::from_secs(3), "took {:?} with the default 120 s wait", start.elapsed());
+    let out = p.run("kimi", &["hook", "prompt", "--agent", "kimi", "--format", "kimi"], Some(&payload));
+    assert!(out.stdout.is_empty(), "kimi is in no room here");
+}
+
+#[test]
+fn rooms_point_at_the_hooks_their_agents_still_need() {
+    let p = Project::with_agents("room-hints", Some("claude,kimi"));
+    assert!(!p.root.join(".codex/hooks.json").exists(), "codex is not on the project list");
+    const CODEX_HINT: &str = "room hooks for codex are not installed; run `cowork hook install --tool codex`";
+    const KIMI_HINT: &str = "kimi: Kimi Code reads hooks only from its global config";
+    let out = p.ok("claude", &["new", "side", "--agents", "codex,kimi", "--no-agent-files"]);
+    assert!(out.contains(CODEX_HINT), "room-only codex needs its hooks:\n{out}");
+    assert!(out.contains(KIMI_HINT), "{out}");
+    // The default install covers agents that are only in rooms.
+    p.ok("claude", &["hook", "install"]);
+    assert!(p.root.join(".codex/hooks.json").exists());
+    let out = p.ok("claude", &["new", "side2", "--agents", "codex,claude", "--no-agent-files"]);
+    assert!(!out.contains("are not installed; run"), "{out}");
+    p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+    let out = p.ok("claude", &["new", "side3", "--agents", "claude,kimi", "--no-agent-files"]);
+    assert!(!out.contains(KIMI_HINT), "{out}");
+    let doctor = p.ok("claude", &["doctor"]);
+    assert!(doctor.contains("room hooks for kimi installed") && doctor.contains("room hooks for codex installed"), "{doctor}");
+}
+
+#[test]
+fn kimi_hook_install_and_remove_restore_any_file_ending_byte_for_byte() {
+    let p = Project::with_agents("kimi-bytes", Some("claude,codex,kimi"));
+    fs::create_dir_all(p.root.join("kimi-home")).unwrap();
+    let body = "# mine\nmodel = \"k2\"";
+    let originals = [
+        String::new(),
+        body.to_string(),
+        format!("{body}\n"),
+        format!("{body}\n\n"),
+        format!("{body}\n\n\n"),
+    ];
+    for original in &originals {
+        fs::write(kimi_config(&p), original).unwrap();
+        p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+        let once = fs::read_to_string(kimi_config(&p)).unwrap();
+        assert!(once.starts_with(original.as_str()), "install only appends: {original:?}\n{once}");
+        p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+        assert_eq!(fs::read_to_string(kimi_config(&p)).unwrap(), once, "reinstall is byte-identical for {original:?}");
+        p.ok("claude", &["hook", "remove", "--tool", "kimi"]);
+        assert_eq!(&fs::read_to_string(kimi_config(&p)).unwrap(), original, "remove restores {original:?}");
+    }
+}
+
+#[test]
+fn kimi_hook_ownership_is_proven_not_guessed() {
+    let p = Project::with_agents("kimi-owner", Some("claude,codex,kimi"));
+    fs::create_dir_all(p.root.join("kimi-home")).unwrap();
+    p.ok("claude", &["hook", "install", "--tool", "kimi"]);
+    let good = fs::read_to_string(kimi_config(&p)).unwrap();
+    let (block_start, _) = good.split_once("[[hooks]]").unwrap();
+    let cases = [
+        // Marker lines inside a multi-line string are text, not a block.
+        ("markers in a string", format!("notes = \"\"\"\n{good}\"\"\"\n")),
+        ("markers around a user note in a string", "notes = \"\"\"\n# cowork:start pad=0\nremember the release notes\n# cowork:end\n\"\"\"\n".to_string()),
+        // A block whose entries were deleted by hand.
+        ("emptied block", format!("{block_start}# cowork:end\n")),
+        // Top-level keys after the block fold into its last table.
+        ("keys leaking into the block", format!("{good}extra = 1\n")),
+    ];
+    for (what, text) in &cases {
+        fs::write(kimi_config(&p), text).unwrap();
+        for action in ["install", "remove"] {
+            let out = p.run("claude", &["hook", action, "--tool", "kimi"], None);
+            assert!(!out.status.success(), "{what}: {action} should refuse");
+            assert_eq!(&fs::read_to_string(kimi_config(&p)).unwrap(), text, "{what}: {action} changed the file");
+        }
+        let status = p.ok("claude", &["hook", "status"]);
+        let kimi_line = status.lines().find(|l| l.starts_with("kimi")).unwrap();
+        assert!(!kimi_line.contains(" installed "), "{what}: reported installed: {kimi_line}");
+    }
+}
+
+#[test]
+fn stop_hook_names_each_room_separately_and_tells_kimi_to_keep_waiting() {
+    let p = Project::with_agents("two-rooms", Some("claude,codex,kimi"));
+    p.ok("claude", &["new", "pair", "--no-agent-files"]);
+    let payload = format!("{{\"cwd\": {:?}}}", p.root.to_string_lossy());
+    for me in ["claude", "kimi"] {
+        p.ok(me, &["read"]);
+        p.ok(me, &["read", "--room", "pair"]);
+    }
+    p.post("codex", "in main");
+    p.ok("codex", &["post", "--room", "pair", "--thoughts", "in pair"]);
+
+    let out = p.run("kimi", &["hook", "stop", "--agent", "kimi", "--format", "kimi", "--timeout", "1"], Some(&payload));
+    assert_eq!(out.status.code(), Some(2));
+    let reason = String::from_utf8_lossy(&out.stderr);
+    assert!(reason.contains("in main") && reason.contains("in pair"), "{reason}");
+    assert!(reason.contains("COWORK_AGENT=kimi cowork post --room main ") && reason.contains("COWORK_AGENT=kimi cowork post --room pair "), "{reason}");
+    assert!(!reason.contains("main|pair") && !reason.contains("pair|main"), "{reason}");
+    assert!(reason.contains("once per turn") && reason.contains("cowork wait --all-rooms --timeout 600") && reason.contains("WaitFor"), "{reason}");
+    assert!(!reason.contains("you may stop"), "{reason}");
+
+    let out = p.run("claude", &["hook", "stop", "--agent", "claude", "--timeout", "1"], Some(&payload));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("`cowork post --room main ") && reason.contains("`cowork post --room pair "), "{reason}");
+    assert!(!reason.contains("main|pair") && reason.contains("you may stop"), "{reason}");
+}
+
+#[test]
+fn wait_all_rooms_covers_only_the_callers_rooms() {
+    let p = Project::new("wait-members");
+    p.ok("claude", &["new", "a", "--agents", "claude,kimi", "--no-agent-files"]);
+    p.ok("claude", &["new", "b", "--agents", "codex,kimi", "--no-agent-files"]);
+    let wait = |timeout: &str| p.run("kimi", &["wait", "--all-rooms", "--timeout", timeout], None);
+    assert_eq!(wait("1").status.code(), Some(2));
+    let cursors = p.root.join(".ai-common/.cursors/kimi");
+    assert!(cursors.join("a").exists() && cursors.join("b").exists() && !cursors.join("main").exists());
+    // A post in main, which kimi is not in, does not wake it.
+    p.post("codex", "main only");
+    assert_eq!(wait("1").status.code(), Some(2));
+    assert!(!cursors.join("main").exists());
+    // Posts in its rooms do, including one that lands mid-wait after a main post.
+    p.ok("codex", &["post", "--room", "b", "--thoughts", "in b"]);
+    let out = wait("1");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("in b"));
+    let child = p.cmd("kimi").args(["wait", "--all-rooms", "--timeout", "10"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    p.post("codex", "main again");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    p.ok("claude", &["post", "--room", "a", "--thoughts", "in a"]);
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(text.contains("in a") && !text.contains("main again"), "{text}");
+    // An agent in no room gets an error, not an endless wait.
+    let out = p.run("gemini", &["wait", "--all-rooms", "--timeout", "1"], None);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("not a member of any room"));
+    // Explicit --room is still open for manual inspection: it listens from now, like any first wait.
+    assert_eq!(p.run("kimi", &["wait", "--room", "main", "--timeout", "1"], None).status.code(), Some(2));
+    assert!(cursors.join("main").exists());
 }

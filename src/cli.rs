@@ -17,7 +17,7 @@ pub enum Cmd {
     /// Scaffold .ai-common/, optional rules blocks, and print kickoff prompts
     #[command(after_help = "Without either agent-files flag, a terminal asks; non-interactive init writes agent files.")]
     Init {
-        /// Comma-separated participant names (default: claude,codex)
+        /// Comma-separated agents, 2 or 3, for main and new rooms (default: claude,codex; known: claude, codex, kimi)
         #[arg(long)]
         agents: Option<String>,
         /// Initialize even outside a git repository
@@ -35,7 +35,7 @@ pub enum Cmd {
     Read(ReadArgs),
     /// Block until someone else posts in the room
     Wait(WaitArgs),
-    /// Create a room and print its two role prompts (advisor and executor)
+    /// Create a room and print its role prompts (one executor, the others advise)
     #[command(after_help = "Without either agent-files flag, a terminal asks; non-interactive new leaves agent files untouched.")]
     New {
         /// Room name (letters, digits, - _ .)
@@ -45,6 +45,9 @@ pub enum Cmd {
         /// The agent that writes changes in this room (default: first participant)
         #[arg(long, value_name = "AGENT")]
         executor: Option<String>,
+        /// Comma-separated agents in this room, 2 or 3 (default: the project's agents)
+        #[arg(long, value_name = "LIST")]
+        agents: Option<String>,
         #[command(flatten)]
         agent_files: AgentFilesArgs,
     },
@@ -85,7 +88,7 @@ pub enum Cmd {
     },
     /// Print the kickoff prompt (or rules block, or a room's role prompt) for an agent
     Prompt {
-        /// Agent name, e.g. claude or codex
+        /// Agent name, e.g. claude, codex, or kimi
         agent: String,
         /// Print the role prompt (advisor or executor) for this room instead
         #[arg(long, value_name = "ROOM")]
@@ -125,7 +128,7 @@ pub enum Cmd {
     },
     /// Check the installation and project setup
     Doctor,
-    /// Editor hooks: deliver room messages to Claude Code and Codex automatically
+    /// Editor hooks: deliver room messages to Claude Code, Codex, and Kimi Code automatically
     Hook {
         #[command(subcommand)]
         action: HookCmd,
@@ -202,13 +205,15 @@ pub struct ReportArgs {
 #[derive(Subcommand)]
 pub enum HookCmd {
     /// Write the hook config into .claude/settings.json and/or .codex/hooks.json
+    #[command(after_help = "Kimi Code reads hooks only from its global config ($KIMI_CODE_HOME/config.toml, default ~/.kimi-code/config.toml), so kimi is installed only when named: --tool kimi.")]
     Install {
-        /// claude, codex, or all (default: every configured participant)
+        /// claude, codex, kimi, or all (all = claude and codex; default: the claude and codex agents of this project and its rooms)
         #[arg(long, value_name = "TOOL")]
         tool: Option<String>,
     },
-    /// Remove the room hooks from the editor config files
+    /// Remove the room hooks from the editor config files (kimi only when named)
     Remove {
+        /// claude, codex, kimi, or all (default: all = claude and codex)
         #[arg(long, value_name = "TOOL")]
         tool: Option<String>,
     },
@@ -221,11 +226,17 @@ pub enum HookCmd {
         /// Seconds to wait for a message before allowing the stop
         #[arg(long)]
         timeout: Option<u64>,
+        /// Hook protocol: json (Claude Code, Codex) or kimi (Kimi Code: exit code 2 and stderr)
+        #[arg(long, default_value = "json", value_parser = ["json", "kimi"])]
+        format: String,
     },
     /// UserPromptSubmit hook: add unread messages as context
     Prompt {
         #[arg(long, value_name = "NAME")]
         agent: Option<String>,
+        /// Hook protocol: json (Claude Code, Codex) or kimi (Kimi Code: plain text)
+        #[arg(long, default_value = "json", value_parser = ["json", "kimi"])]
+        format: String,
     },
     /// SessionStart hook: brief the agent on its identity, rooms, and roles
     Session {
@@ -315,7 +326,7 @@ pub struct ReadArgs {
 pub struct WaitArgs {
     #[arg(long)]
     pub room: Option<String>,
-    /// Wait on every room of the project instead of one
+    /// Wait on every room of the project that you are a member of, instead of one
     #[arg(long)]
     pub all_rooms: bool,
     /// Seconds to wait before giving up (exit code 2)

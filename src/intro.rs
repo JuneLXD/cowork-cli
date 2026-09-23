@@ -12,7 +12,7 @@ pub const TEXT: &str = r#"cowork - helps coding agents work together on one repo
     edit -> complete
 
 A room keeps plans, votes, and progress in one local message log.
-Start: cowork init, then open your agents and paste their prompts.
+Start: cowork init [--agents claude,codex,kimi]; paste the prompts.
 Progress: cowork status | Help: cowork --help
 Alpha software: cowork feedback bug "...""#;
 

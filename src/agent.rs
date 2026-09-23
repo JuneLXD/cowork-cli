@@ -1,8 +1,12 @@
 use crate::config::Config;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use std::env;
 
 pub const DEFAULT_AGENTS: &[&str] = &["claude", "codex"];
+/// The tools cowork has specific support for; the menus offer these first.
+pub const KNOWN_AGENTS: &[&str] = &["claude", "codex", "kimi"];
+/// The most agents one room can hold: one executor and up to two advisors.
+pub const MAX_ROOM_AGENTS: usize = 3;
 
 /// Detect the calling agent from the environment. Returns (name, source).
 pub fn detect_env() -> Option<(String, &'static str)> {
@@ -42,6 +46,21 @@ pub fn participants(cfg: &Config) -> Vec<String> {
         .clone()
         .filter(|a| !a.is_empty())
         .unwrap_or_else(|| DEFAULT_AGENTS.iter().map(|s| s.to_string()).collect())
+}
+
+/// A room roster must be 2 to MAX_ROOM_AGENTS distinct, valid names. Checked
+/// before anything is written, so a bad list never leaves a room behind.
+pub fn validate_roster(list: &[String]) -> Result<()> {
+    if list.len() < 2 || list.len() > MAX_ROOM_AGENTS {
+        bail!("a room needs 2 to {MAX_ROOM_AGENTS} agents, got {} ({})", list.len(), list.join(", "));
+    }
+    for (i, a) in list.iter().enumerate() {
+        crate::room::validate_agent(a)?;
+        if list[..i].iter().any(|b| b.eq_ignore_ascii_case(a)) {
+            bail!("agent `{a}` is listed twice");
+        }
+    }
+    Ok(())
 }
 
 /// Everyone who is not `me`, joined for display.

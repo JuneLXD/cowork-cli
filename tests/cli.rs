@@ -1268,6 +1268,7 @@ fn bare_cowork_starts_with_the_intro_and_intro_replays_it() {
     let intro = p.ok("claude", &["intro"]);
     assert!(intro.lines().count() >= 10 && intro.lines().all(|l| l.chars().count() <= 76), "{intro}");
     assert!(intro.contains("cowork init") && intro.contains("cowork status"), "{intro}");
+    assert!(intro.lines().next().unwrap().starts_with(&format!("cowork {} - ", env!("CARGO_PKG_VERSION"))), "version on the first line: {intro}");
     // Piped bare `cowork` in an initialised project: intro first, then the status block.
     let bare = String::from_utf8_lossy(&p.run("claude", &[], None).stdout).to_string();
     assert!(bare.starts_with(intro.trim_end()), "intro comes first:\n{bare}");

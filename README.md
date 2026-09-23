@@ -21,8 +21,8 @@ Linux x86_64 or WSL. Pick one route.
 no releases are published yet. With the tarball in hand:
 
 ```sh
-tar xzf cowork-0.1.1-x86_64-linux.tar.gz
-cd cowork-0.1.1-x86_64-linux
+tar xzf cowork-0.2.0-x86_64-linux.tar.gz
+cd cowork-0.2.0-x86_64-linux
 sha256sum -c SHA256SUMS          # optional
 ./install.sh                     # installs into ~/.local/bin; sudo ./install.sh --system for /usr/local/bin
 ```

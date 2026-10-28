@@ -128,7 +128,7 @@ impl Ui for Term {
             .into_iter()
             .map(|a| {
                 if a == NEW_DSH {
-                    return opt(a.clone(), format!("{a}  (any other model in DeepSeek Harness; you name it next)"));
+                    return opt(a.clone(), format!("{a}  (one or more agents in DeepSeek Harness, any model; you name them next)"));
                 }
                 match agent::describe(&a) {
                     Some(what) => opt(a.clone(), format!("{a}  ({what})")),
@@ -147,7 +147,7 @@ impl Ui for Term {
     }
 }
 
-/// The picker entry that adds a `dsh-<model>` agent; the model is asked next.
+/// The picker entry that adds `dsh-<model>` agents; their models are asked next.
 const NEW_DSH: &str = "dsh-<model>";
 
 /// What an agent picker offers: the known tools, then any other name in
@@ -171,41 +171,48 @@ fn choose_agents(ui: &mut dyn Ui, title: &str, current: &[String]) -> Result<Opt
     let (offered, pre) = agent_choices(current);
     let Some(mut picked) = ui.multi(title, offered, &pre)? else { return Ok(None) };
     if let Some(i) = picked.iter().position(|a| a == NEW_DSH) {
-        let Some(name) = name_dsh_agent(ui, &picked)? else { return Ok(None) };
-        picked[i] = name;
+        let others: Vec<String> = picked.iter().filter(|a| *a != NEW_DSH).cloned().collect();
+        let Some(names) = name_dsh_agents(ui, &others)? else { return Ok(None) };
+        picked.splice(i..=i, names);
     }
     let mut out: Vec<String> = current.iter().filter(|a| picked.contains(a)).cloned().collect();
     out.extend(picked.into_iter().filter(|a| !current.contains(a)));
     Ok(Some(out))
 }
 
-/// Ask which model the new DeepSeek Harness agent runs; the agent is `dsh-<model>`.
+/// Ask which models the new DeepSeek Harness agents run, one agent per entry: the
+/// harness is free and runs any model, so a room may hold several, even of one model.
+/// Each is `dsh-<model>`; a name already taken gets the next number (`dsh-qwen-2`).
 /// An empty answer backs out, like an empty room name.
-fn name_dsh_agent(ui: &mut dyn Ui, picked: &[String]) -> Result<Option<String>> {
-    loop {
-        let Some(model) = ui.text(
-            "Which model will this DeepSeek Harness agent run?",
+fn name_dsh_agents(ui: &mut dyn Ui, picked: &[String]) -> Result<Option<Vec<String>>> {
+    'ask: loop {
+        let Some(answer) = ui.text(
+            "Which models will DeepSeek Harness run? One agent per entry, comma-separated",
             None,
-            "e.g. qwen or glm; the agent is named dsh-<model> · esc back",
+            "e.g. qwen or qwen, qwen, glm-4; each agent is named dsh-<model>, repeats are numbered · esc back",
         )?
         else {
             return Ok(None);
         };
-        let model = model.trim().to_ascii_lowercase();
-        let model = model.strip_prefix(agent::DSH_PREFIX).unwrap_or(&model);
-        if model.is_empty() {
+        let mut names: Vec<String> = Vec::new();
+        for model in answer.split(',').map(|m| m.trim().to_ascii_lowercase()).filter(|m| !m.is_empty()) {
+            let model = model.strip_prefix(agent::DSH_PREFIX).unwrap_or(&model).to_string();
+            if model.is_empty() || !model.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+                println!("use only letters, digits, - _ . in model names, separated by commas");
+                continue 'ask;
+            }
+            let base = format!("{}{model}", agent::DSH_PREFIX);
+            let taken = |n: &String| picked.contains(n) || names.contains(n);
+            let name = std::iter::once(base.clone())
+                .chain((2..).map(|i| format!("{base}-{i}")))
+                .find(|n| !taken(n))
+                .expect("an unused number exists");
+            names.push(name);
+        }
+        if names.is_empty() {
             return Ok(None);
         }
-        if !model.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
-            println!("use only letters, digits, - _ . in the model name");
-            continue;
-        }
-        let name = format!("{}{model}", agent::DSH_PREFIX);
-        if picked.contains(&name) {
-            println!("{name} is already picked");
-            continue;
-        }
-        return Ok(Some(name));
+        return Ok(Some(names));
     }
 }
 
@@ -301,7 +308,7 @@ fn setup_menu() -> Result<bool> {
             println!();
             println!("Setup from this menu will:");
             println!("  1. ask which AIs work here (two or more of claude, codex, kimi, deepseek, argon, muse, or");
-            println!("     dsh-<model> for any model in DeepSeek Harness), then create .ai-common/rooms/main.md,");
+            println!("     dsh-<model> agents for any models in DeepSeek Harness), then create .ai-common/rooms/main.md,");
             println!("     the shared log, plus PROTOCOL.md (kept as is if it exists)");
             println!("  2. ask whether to add cowork rules to CLAUDE.md and AGENTS.md (existing text is preserved)");
             println!("  3. install editor hooks for the selected claude, codex, and muse agents (.claude/settings.json,");
@@ -669,14 +676,25 @@ mod tests {
     fn another_model_in_deepseek_harness_is_named_dsh_model() {
         let mut ui = script(vec![A::Multi(&["claude", NEW_DSH]), A::Text("Qwen")]);
         assert_eq!(choose_agents(&mut ui, "t", &names(&["claude", "codex"])).unwrap(), Some(names(&["claude", "dsh-qwen"])));
-        // A full name is accepted as is; a bad or duplicate name is asked again.
-        let mut ui = script(vec![A::Multi(&["dsh-glm", NEW_DSH]), A::Text("qwen 3"), A::Text("dsh-glm"), A::Text("dsh-qwen3")]);
-        assert_eq!(choose_agents(&mut ui, "t", &names(&["dsh-glm", "claude"])).unwrap(), Some(names(&["dsh-glm", "dsh-qwen3"])));
+        // A bad name is asked again; a full name is accepted, and a taken one gets the next number.
+        let mut ui = script(vec![A::Multi(&["dsh-glm", NEW_DSH]), A::Text("qwen 3"), A::Text("dsh-glm")]);
+        assert_eq!(choose_agents(&mut ui, "t", &names(&["dsh-glm", "claude"])).unwrap(), Some(names(&["dsh-glm", "dsh-glm-2"])));
         assert!(ui.answers.is_empty());
         // Esc or an empty name at the model question backs out of the whole choice.
-        for answer in [A::Esc, A::Text("")] {
+        for answer in [A::Esc, A::Text(""), A::Text(" , ")] {
             let mut ui = script(vec![A::Multi(&["claude", NEW_DSH]), answer]);
             assert_eq!(choose_agents(&mut ui, "t", &names(&["claude", "codex"])).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn several_agents_can_share_deepseek_harness_even_on_one_model() {
+        // One entry per agent: repeats are numbered, past the names already in the room too.
+        let mut ui = script(vec![A::Multi(&["claude", "deepseek", "dsh-qwen", NEW_DSH]), A::Text("qwen, qwen, GLM-4, deepseek")]);
+        let got = choose_agents(&mut ui, "t", &names(&["claude", "dsh-qwen"])).unwrap().unwrap();
+        assert_eq!(got, names(&["claude", "dsh-qwen", "deepseek", "dsh-qwen-2", "dsh-qwen-3", "dsh-glm-4", "dsh-deepseek"]));
+        for a in &got[1..] {
+            assert_eq!(agent::known_tool(a), Some("deepseek"), "{a} runs in DeepSeek Harness");
         }
     }
 

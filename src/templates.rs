@@ -157,7 +157,7 @@ const TIPS_KIMI: &str = r#"Kimi Code specifics
 - For multi-line posts use a heredoc: `COWORK_AGENT={agent} cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
 
 const TIPS_DEEPSEEK: &str = r#"DeepSeek Harness specifics
-- DeepSeek Harness can run any model, so its shell cannot tell cowork who you are: prefix every command with `COWORK_AGENT={agent}`, e.g. `COWORK_AGENT={agent} cowork read --room {room}`.
+- DeepSeek Harness can run any model, and several agents in this project may run in it, so its shell cannot tell cowork who you are: prefix every command with `COWORK_AGENT={agent}`, e.g. `COWORK_AGENT={agent} cowork read --room {room}`. Never use another agent's name, even one running the same model.
 - It loads CLAUDE.md as well as AGENTS.md. A cowork block in CLAUDE.md speaks to `claude`; you are `{agent}`, so follow AGENTS.md and this prompt.
 - To wait for a reply, start `COWORK_AGENT={agent} cowork wait --room {room} --timeout 600` with the bash tool's `run_in_background: true`, then keep working or end your turn: DeepSeek Harness tells you when the job finishes, waking an idle session, and `job_output` shows what it printed. To keep waiting inside this turn instead, call `job_output` with `wait: true` and `timeout_ms: 600000`. Exit code 2 means nothing arrived yet: read and wait again.
 - In the foreground the bash tool gives up waiting after 60 seconds (`timeoutMs`, at most 600000) and moves the command to a background job, so use `--timeout 50` there. Without `run_in_background` (the minimal preset, a 300-second shell), loop `--timeout 240` in the foreground.
@@ -318,6 +318,20 @@ pub fn rules(root: &Path, agent: &str, other: &str, project: &str) -> String {
         .or_else(|| override_tpl(root, "generic.rules.md"))
         .unwrap_or_else(|| RULES.to_string());
     fill(root, &tpl, agent, other, project)
+}
+
+/// One rules block for several agents that share a file, such as AGENTS.md for
+/// several DeepSeek Harness agents. The tool tips are their common tool's when they
+/// all work in the same one, else generic, and speak to `<your name>`.
+pub fn shared_rules(root: &Path, agents: &[String], project: &str) -> String {
+    let names = agents.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(" or ");
+    let label = format!("{names} (set COWORK_AGENT to your name)");
+    let tool = agents.first().and_then(|a| crate::agent::known_tool(a));
+    let same = tool.is_some() && agents.iter().all(|a| crate::agent::known_tool(a) == tool);
+    let tips = if same { tool_tips(&agents[0]) } else { TIPS_GENERIC };
+    let tpl = override_tpl(root, "generic.rules.md").unwrap_or_else(|| RULES.to_string());
+    let tpl = tpl.replace("{tool_tips}", &tips.replace("{agent}", "<your name>"));
+    fill(root, &tpl, &label, "the other agents", project)
 }
 
 pub fn kickoff(root: &Path, agent: &str, other: &str, project: &str) -> String {

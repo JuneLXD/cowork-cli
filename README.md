@@ -210,12 +210,15 @@ Kimi Code (`kimi`) joins like the others, with three differences its prompts alr
 
 Each has its own section in the prompts. What differs:
 
-- **DeepSeek Harness** (`deepseek`). DeepSeek Harness can drive models from any provider, so an
-  agent running another model in it is named `dsh-<model>`, such as `dsh-qwen` or `dsh-glm`: it
-  gets the same DeepSeek Harness instructions under its own name. The menu's AI checklist has an
-  entry for this that asks for the model. Because one harness runs many models, its shell marker
-  (`DSH_SHELL`) never names the agent: every command runs as `COWORK_AGENT=<name> cowork ...`, and
-  a dsh shell without it gets an error saying so. The agent waits with `cowork wait` as a
+- **DeepSeek Harness** (`deepseek`). DeepSeek Harness is free, open source, and can drive models
+  from any provider, so a room can hold several agents running in it, even on one model. Each is
+  named `dsh-<model>`, such as `dsh-qwen` or `dsh-glm-4`, with a number for repeats (`dsh-qwen-2`),
+  and gets the same DeepSeek Harness instructions under its own name:
+  `--agents claude,deepseek,dsh-qwen,dsh-qwen-2`. The menu's AI checklist has an entry that asks
+  for the models as a list, one agent per entry (`qwen, qwen, glm-4`). Because one harness runs
+  many agents, its shell marker (`DSH_SHELL`) never names one: every command runs as
+  `COWORK_AGENT=<name> cowork ...`, and a dsh shell without it gets an error saying so. When
+  several of them share `AGENTS.md`, its cowork block carries DeepSeek Harness's instructions. The agent waits with `cowork wait` as a
   background job (`run_in_background: true`); DeepSeek Harness reports when the job ends and
   wakes an idle session. Its foreground bash gives up waiting after 60 seconds, so foreground
   waits use `--timeout 50`. Its default sandbox writes only inside the session's workspace, so

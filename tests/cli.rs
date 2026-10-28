@@ -1395,6 +1395,34 @@ fn deepseek_and_dsh_model_agents_get_deepseek_harness_instructions() {
 }
 
 #[test]
+fn several_agents_can_share_deepseek_harness() {
+    let p = Project::with_agents("dsh-many", Some("claude,deepseek,dsh-qwen,dsh-qwen-2"));
+    // AGENTS.md speaks for all three DeepSeek Harness agents, with that tool's tips.
+    let rules = fs::read_to_string(p.root.join("AGENTS.md")).unwrap();
+    assert!(rules.contains("`deepseek` or `dsh-qwen` or `dsh-qwen-2` (set COWORK_AGENT to your name)"), "{rules}");
+    assert!(rules.contains("DeepSeek Harness specifics") && rules.contains("`COWORK_AGENT=<your name> cowork read --room main`"), "{rules}");
+    for a in ["deepseek", "dsh-qwen", "dsh-qwen-2"] {
+        let kickoff = p.ok("claude", &["prompt", a]);
+        assert!(kickoff.contains(&format!("`COWORK_AGENT={a} cowork read --room main`")), "{a}:\n{kickoff}");
+        assert!(kickoff.contains("Never use another agent's name, even one running the same model."), "{a}:\n{kickoff}");
+    }
+    // Each posts, reads, and votes as itself.
+    p.ok("claude", &["post", "--propose", "--thoughts", "plan", "--action", "x"]);
+    p.ok("dsh-qwen", &["post", "--re", "1", "--vote", "approve: looks right"]);
+    let s = room_status_json(&p, "main");
+    assert_eq!(proposal(&s, 1)["waiting_for"], serde_json::json!(["deepseek", "dsh-qwen-2"]));
+    let unread = p.ok("dsh-qwen-2", &["read"]);
+    assert!(unread.contains("### [claude]") && unread.contains("### [dsh-qwen]"), "{unread}");
+    assert!(!p.ok("dsh-qwen", &["read"]).contains("### [dsh-qwen]"), "own posts stay hidden from their author");
+    p.ok("dsh-qwen-2", &["post", "--re", "1", "--vote", "reject: needs a test"]);
+    assert_eq!(proposal(&room_status_json(&p, "main"), 1)["state"], "rejected");
+    // A file shared by agents of different tools keeps the generic tips.
+    let mixed = Project::with_agents("dsh-mixed", Some("claude,codex,dsh-qwen"));
+    let rules = fs::read_to_string(mixed.root.join("AGENTS.md")).unwrap();
+    assert!(rules.contains("Tool specifics") && !rules.contains("DeepSeek Harness specifics"), "{rules}");
+}
+
+#[test]
 fn muse_gets_project_hooks_in_claude_codes_format() {
     let p = Project::with_agents("muse", Some("claude,muse"));
     let path = p.root.join(".muse/hooks.json");

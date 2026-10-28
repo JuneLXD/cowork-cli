@@ -176,13 +176,7 @@ fn write_agent_files(project: &Project, participants: &[String]) -> Result<Vec<&
             let a = &agents_here[0];
             templates::rules(&project.root, a, &agent::counterpart(a, participants), &project.name)
         } else {
-            let names = agents_here.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(" or ");
-            templates::rules(
-                &project.root,
-                &format!("{names} (set COWORK_AGENT to your name)"),
-                "the other agents",
-                &project.name,
-            )
+            templates::shared_rules(&project.root, agents_here, &project.name)
         };
         templates::upsert_block(&project.root.join(file), &block)?;
         updated.push(*file);

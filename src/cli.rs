@@ -17,7 +17,7 @@ pub enum Cmd {
     /// Scaffold .ai-common/, optional rules blocks, and print kickoff prompts
     #[command(after_help = "Without either agent-files flag, a terminal asks; non-interactive init writes agent files.")]
     Init {
-        /// Comma-separated agents, 2 or 3, for main and new rooms (default: claude,codex; known: claude, codex, kimi)
+        /// Comma-separated agents, 2 or 3, for main and new rooms (default: claude,codex; known: claude, codex, kimi, deepseek, argon, muse)
         #[arg(long)]
         agents: Option<String>,
         /// Initialize even outside a git repository
@@ -48,6 +48,9 @@ pub enum Cmd {
         /// Comma-separated agents in this room, 2 or 3 (default: the project's agents)
         #[arg(long, value_name = "LIST")]
         agents: Option<String>,
+        /// Let the advisors also create and run test scripts and run commands; they still never modify source code
+        #[arg(long)]
+        advisor_tests: bool,
         #[command(flatten)]
         agent_files: AgentFilesArgs,
     },
@@ -88,7 +91,7 @@ pub enum Cmd {
     },
     /// Print the kickoff prompt (or rules block, or a room's role prompt) for an agent
     Prompt {
-        /// Agent name, e.g. claude, codex, or kimi
+        /// Agent name, e.g. claude, codex, kimi, deepseek, argon, or muse
         agent: String,
         /// Print the role prompt (advisor or executor) for this room instead
         #[arg(long, value_name = "ROOM")]
@@ -128,7 +131,7 @@ pub enum Cmd {
     },
     /// Check the installation and project setup
     Doctor,
-    /// Editor hooks: deliver room messages to Claude Code, Codex, and Kimi Code automatically
+    /// Editor hooks: deliver room messages to Claude Code, Codex, Muse Code, and Kimi Code automatically
     Hook {
         #[command(subcommand)]
         action: HookCmd,
@@ -204,16 +207,16 @@ pub struct ReportArgs {
 
 #[derive(Subcommand)]
 pub enum HookCmd {
-    /// Write the hook config into .claude/settings.json and/or .codex/hooks.json
-    #[command(after_help = "Kimi Code reads hooks only from its global config ($KIMI_CODE_HOME/config.toml, default ~/.kimi-code/config.toml), so kimi is installed only when named: --tool kimi.")]
+    /// Write the hook config into .claude/settings.json, .codex/hooks.json, and/or .muse/hooks.json
+    #[command(after_help = "Kimi Code reads hooks only from its global config ($KIMI_CODE_HOME/config.toml, default ~/.kimi-code/config.toml), so kimi is installed only when named: --tool kimi. DeepSeek Harness (deepseek, dsh-<model>) and Antigravity CLI (argon) get no hooks; their prompts tell them to wait with `cowork wait`.")]
     Install {
-        /// claude, codex, kimi, or all (all = claude and codex; default: the claude and codex agents of this project and its rooms)
+        /// claude, codex, muse, kimi, or all (all = claude, codex, and muse; default: the claude, codex, and muse agents of this project and its rooms)
         #[arg(long, value_name = "TOOL")]
         tool: Option<String>,
     },
     /// Remove the room hooks from the editor config files (kimi only when named)
     Remove {
-        /// claude, codex, kimi, or all (default: all = claude and codex)
+        /// claude, codex, muse, kimi, or all (default: all = claude, codex, and muse)
         #[arg(long, value_name = "TOOL")]
         tool: Option<String>,
     },

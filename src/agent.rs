@@ -4,7 +4,7 @@ use std::env;
 
 pub const DEFAULT_AGENTS: &[&str] = &["claude", "codex"];
 /// The tools cowork has specific support for; the menus offer these first.
-pub const KNOWN_AGENTS: &[&str] = &["claude", "codex", "kimi"];
+pub const KNOWN_AGENTS: &[&str] = &["claude", "codex", "kimi", "deepseek", "argon", "muse"];
 /// The most agents one room can hold: one executor and up to two advisors.
 pub const MAX_ROOM_AGENTS: usize = 3;
 
@@ -27,6 +27,15 @@ pub fn detect_env() -> Option<(String, &'static str)> {
             return Some(("codex".into(), "CODEX_* marker"));
         }
     }
+    // Muse Code documents these for every shell command it runs.
+    if env::var_os("MUSE_SESSION_ID").is_some() || env::var_os("MUSE_THREAD_ID").is_some() {
+        return Some(("muse".into(), "MUSE_SESSION_ID marker"));
+    }
+    // Antigravity CLI sets this for agent commands, though Google does not document it.
+    // DeepSeek Harness's DSH_SHELL is deliberately not a marker: it can run any model.
+    if env::var_os("ANTIGRAVITY_AGENT").is_some() {
+        return Some(("argon".into(), "ANTIGRAVITY_AGENT marker"));
+    }
     None
 }
 
@@ -37,8 +46,54 @@ pub fn detect(flag: Option<&str>) -> Result<String> {
         }
     }
     detect_env().map(|(a, _)| a).ok_or_else(|| {
-        anyhow!("cannot determine which agent is calling: pass --agent <NAME> or set COWORK_AGENT=<NAME> (see `cowork doctor`)")
+        // DeepSeek Harness marks its shells but can run any model, so the marker
+        // cannot say which agent this is; it only explains what to set.
+        if env::var_os("DSH_SHELL").is_some() {
+            anyhow!("cannot determine which agent is calling: this is a DeepSeek Harness shell, which can run any model; set COWORK_AGENT=<NAME> (deepseek, or dsh-<model>) or pass --agent <NAME>")
+        } else {
+            anyhow!("cannot determine which agent is calling: pass --agent <NAME> or set COWORK_AGENT=<NAME> (see `cowork doctor`)")
+        }
     })
+}
+
+/// `dsh-<model>` names an agent that runs <model> in DeepSeek Harness, which can drive
+/// models from any provider. It gets DeepSeek Harness's instructions, like `deepseek`.
+pub const DSH_PREFIX: &str = "dsh-";
+
+/// The known tool an agent works in: its own name, or `deepseek` for `dsh-<model>`.
+pub fn known_tool(agent: &str) -> Option<&'static str> {
+    let a = agent.trim().to_ascii_lowercase();
+    let a = match a.strip_prefix(DSH_PREFIX) {
+        Some(model) if !model.is_empty() => "deepseek",
+        _ => a.as_str(),
+    };
+    KNOWN_AGENTS.iter().copied().find(|k| *k == a)
+}
+
+/// The tool an agent works in, for messages: "DeepSeek Harness" for `dsh-qwen` too.
+pub fn tool_name(agent: &str) -> Option<&'static str> {
+    Some(match known_tool(agent)? {
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        "kimi" => "Kimi Code",
+        "deepseek" => "DeepSeek Harness",
+        "argon" => "Google Antigravity CLI",
+        "muse" => "Meta Muse Code",
+        _ => return None,
+    })
+}
+
+/// What the pickers show next to an agent name: its tool, and the model when the
+/// name alone does not say which tool runs it.
+pub fn describe(agent: &str) -> Option<String> {
+    let a = agent.trim().to_ascii_lowercase();
+    if let Some(model) = a.strip_prefix(DSH_PREFIX).filter(|m| !m.is_empty()) {
+        return Some(format!("{model} in DeepSeek Harness"));
+    }
+    match known_tool(&a)? {
+        "argon" => Some("Gemini 4 Argon in Google Antigravity CLI".to_string()),
+        _ => tool_name(&a).map(str::to_string),
+    }
 }
 
 pub fn participants(cfg: &Config) -> Vec<String> {

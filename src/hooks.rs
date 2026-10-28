@@ -1,7 +1,8 @@
 //! Editor hooks for Claude Code (.claude/settings.json), Codex (.codex/hooks.json),
-//! and Kimi Code (its global config.toml). All three send JSON on stdin. Claude Code
-//! and Codex read JSON on stdout; Kimi Code (`--format kimi`) reads exit code 2 plus
-//! stderr to continue a turn, and plain stdout as added context.
+//! Muse Code (.muse/hooks.json, in Claude Code's format), and Kimi Code (its global
+//! config.toml). All four send JSON on stdin. Claude Code, Codex, and Muse Code read
+//! JSON on stdout; Kimi Code (`--format kimi`) reads exit code 2 plus stderr to
+//! continue a turn, and plain stdout as added context.
 //!
 //! - Stop: wait for new room messages and hand them to the agent instead of letting it stop.
 //! - UserPromptSubmit: inject unread messages as context before the agent handles a prompt.
@@ -250,10 +251,13 @@ pub fn session(agent_flag: Option<&str>) -> Result<()> {
             continue;
         }
         let executor = rf.front.as_ref().map(|f| f.executor.clone()).unwrap_or_default();
+        let tests = rf.front.as_ref().map(|f| f.advisor_tests).unwrap_or(false);
         let role = if executor.is_empty() {
             "no roles".to_string()
         } else if executor == me {
             "you are the executor: propose, get a vote, then edit".to_string()
+        } else if tests {
+            format!("you are an advisor: review, vote, and create and run tests (never modify source code), `{executor}` edits")
         } else {
             format!("you are an advisor: review and vote, `{executor}` edits")
         };
@@ -285,13 +289,17 @@ pub fn hook_file(root: &Path, tool: &str) -> PathBuf {
     match tool {
         "claude" => root.join(".claude").join("settings.json"),
         "kimi" => kimi_config_path(),
+        "muse" => root.join(".muse").join("hooks.json"),
         _ => root.join(".codex").join("hooks.json"),
     }
 }
 
-/// Tools whose hooks live in the project. Kimi Code's live in its global config.
-fn is_project_tool(a: &str) -> bool {
-    a == "claude" || a == "codex"
+/// Tools whose hooks live in the project, in Claude Code's JSON format. Kimi Code's
+/// live in its global config.
+pub const PROJECT_TOOLS: &[&str] = &["claude", "codex", "muse"];
+
+pub fn is_project_tool(a: &str) -> bool {
+    PROJECT_TOOLS.contains(&a)
 }
 
 /// `all` means the project-level tools. Kimi's file is global and shared by every
@@ -299,18 +307,37 @@ fn is_project_tool(a: &str) -> bool {
 fn tools_for(root: &Path, tool: Option<&str>) -> Result<Vec<String>> {
     let pool = agent::participants(&config::load(root));
     Ok(match tool {
-        Some("all") => vec!["claude".into(), "codex".into()],
+        Some("all") => PROJECT_TOOLS.iter().map(|t| t.to_string()).collect(),
         Some(t) if is_project_tool(t) || t == "kimi" => vec![t.to_string()],
-        Some(t) => bail!("unknown tool `{t}`: use claude, codex, kimi, or all"),
+        Some(t) if is_hookless_tool(t) => bail!(
+            "cowork has no hooks for {}: `{t}` gets room messages by running `cowork wait`, as its prompts explain",
+            agent::tool_name(t).unwrap_or(t)
+        ),
+        Some(t) => bail!("unknown tool `{t}`: use claude, codex, muse, kimi, or all"),
         None => commands::everyone(root, &pool)?.into_iter().filter(|a| is_project_tool(a)).collect(),
     })
 }
 
+/// Known tools that cowork has no hooks for (DeepSeek Harness, `dsh-<model>` too):
+/// they get room messages only while they run `cowork wait`, which their role and
+/// kickoff prompts tell them to do.
+fn is_hookless_tool(a: &str) -> bool {
+    matches!(agent::known_tool(a), Some(t) if !is_project_tool(t) && t != "kimi")
+}
+
 /// What to run so that each of `agents` gets room messages delivered: project hooks
 /// that are missing, and Kimi's global hook, which cowork never installs on its own.
+/// Tools without hooks get a note that they must wait for messages themselves.
 pub fn setup_hints(root: &Path, agents: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for a in agents {
+        if is_hookless_tool(a) {
+            let tool = agent::tool_name(a).unwrap_or(a);
+            out.push(format!(
+                "{a}: cowork has no hooks for {tool}, so room messages reach it only while it runs `cowork wait`; its prompt tells it to keep waiting"
+            ));
+            continue;
+        }
         if installed(root, a) {
             continue;
         }
@@ -435,6 +462,10 @@ pub fn remove_for(root: &Path, tool: &str) -> Result<Option<PathBuf>> {
 pub fn installed(root: &Path, tool: &str) -> bool {
     if tool == "kimi" {
         return kimi_installed();
+    }
+    // Any other name would map to Codex's file and borrow its answer.
+    if !is_project_tool(tool) {
+        return false;
     }
     load_json(&hook_file(root, tool))
         .ok()
@@ -630,7 +661,7 @@ pub fn install(tool: Option<&str>) -> Result<()> {
     paths::ensure_initialized(&project)?;
     let tools = tools_for(&project.root, tool)?;
     if tools.is_empty() {
-        println!("no claude or codex agent in this project or its rooms; nothing to install in the project");
+        println!("no claude, codex, or muse agent in this project or its rooms; nothing to install in the project");
     }
     for t in &tools {
         let path = if t == "kimi" { install_kimi(&project.root)? } else { install_for(&project.root, t, t)? };
@@ -656,6 +687,9 @@ pub fn print_trust_notes(tools: &[String]) {
     if tools.iter().any(|t| t == "claude") {
         println!("  claude: project hooks load on the next session start; run /hooks inside Claude Code to see them.");
     }
+    if tools.iter().any(|t| t == "muse") {
+        println!("  muse: Muse Code loads .muse/hooks.json only once you trust this workspace (accept its trust prompt), from its next session.");
+    }
     if tools.iter().any(|t| t == "kimi") {
         println!("  kimi: the hooks are global and fire in every project; outside rooms that include kimi they return at once. They load when a Kimi Code session starts.");
     }
@@ -675,7 +709,7 @@ pub fn remove(tool: Option<&str>) -> Result<()> {
 
 pub fn status() -> Result<()> {
     let project = paths::current_project()?;
-    for t in ["claude", "codex", "kimi"] {
+    for t in ["claude", "codex", "muse", "kimi"] {
         let p = hook_file(&project.root, t);
         let state = if installed(&project.root, t) { "installed" } else if p.exists() { "file exists, no room hooks" } else { "not installed" };
         let scope = if t == "kimi" { " (global)" } else { "" };

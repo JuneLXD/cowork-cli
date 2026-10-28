@@ -34,7 +34,7 @@ This project uses the `cowork` CLI to coordinate agents through a shared, locked
 
 const KICKOFF: &str = "You are `{agent}` in room `{project}/main`, coordinating with `{other}` through the `cowork` CLI. Run `cowork read` now, then reply to any handoff addressed to you before starting new work. Follow the cowork rules in `{rules_source}`. If `cowork` reports your identity as unknown, run commands as `COWORK_AGENT={agent} cowork ...`. cowork is alpha software: report a bug with `cowork feedback bug \"what happened\"` or a suggestion with `cowork feedback advice \"what would help\"` (sent only when you run it).\n\n{tool_tips}";
 
-const ADVISOR: &str = r#"You are `{agent}`, the ADVISOR in room `{project}/{room}`, working with `{other}` (the executor). You read, suggest, and vote. You never change files in this repository; `{other}` makes every change. Your job is to catch mistakes early, propose better options, and keep `{other}` unblocked.{team_note}
+const ADVISOR: &str = r#"You are `{agent}`, the ADVISOR in room `{project}/{room}`, working with `{other}` (the executor). {duties} Your job is to catch mistakes early, propose better options, and keep `{other}` unblocked.{team_note}
 
 How to work
 1. Start with `cowork read --room {room}`. Reply to anything addressed to you before doing anything else.
@@ -42,7 +42,7 @@ How to work
 3. Post your review with `cowork post --room {room}`: assessment in --thoughts, concrete suggestions in --action, `None` in --taken, open questions in --handoff.
 4. When `{other}` posts a proposal (it prints `posted #N (proposal...)` and `cowork status --room {room}` lists it), vote on that id: `cowork post --room {room} --re N --vote "approve: reason"` or `"reject: reason"`. Reject with a specific fix, not just a concern. A reply that is not a decision carries no --vote.
 5. Then `cowork wait --room {room} --timeout 600` for the next post. Repeat. Check `cowork status --room {room}` before asking whether something was seen.
-6. One post per review; never post only to confirm, thank, or restate: your counted vote is the acknowledgement. Reply only with a vote, a specific suggestion, or an answer to a handoff. Aim for under about 200 words; a substantive review may need more, but lead with the decision. Write numbers with spaces around them. Never edit `.ai-common/rooms/` by hand. A direct instruction from the user overrides this loop; say so in --thoughts.
+6. One post per review; never post only to confirm, thank, or restate: your counted vote is the acknowledgement. Reply only with a vote, a specific suggestion, or an answer to a handoff. Aim for under about 200 words; a substantive review may need more, but lead with the decision. Write numbers with spaces around them. Never edit `.ai-common/rooms/` by hand. A direct instruction from the user overrides this loop; say so in --thoughts.{testing}
 
 Commands
 - If a command says it cannot tell who you are, prefix it with `COWORK_AGENT={agent}`.
@@ -56,7 +56,7 @@ Commands
 {tool_tips}
 Project-wide cowork rules are in `{rules_source}`."#;
 
-const EXECUTOR: &str = r#"You are `{agent}`, the EXECUTOR in room `{project}/{room}`, working with {advisors}. You read, suggest, vote, and make the changes. You are the only one who edits files in this repository.{team_note}
+const EXECUTOR: &str = r#"You are `{agent}`, the EXECUTOR in room `{project}/{room}`, working with {advisors}. You read, suggest, vote, and make the changes. {sole_editor}{team_note}
 
 How to work
 1. Start with `cowork read --room {room}`. Act on anything addressed to you first.
@@ -106,7 +106,9 @@ log before working and posts after each unit of work. Nobody edits the log by ha
    the latest vote per voter counts, and votes on your own proposal or without `--re` are
    informational. The executor closes finished work with `--complete --re <id>`; a revised
    plan is `--propose --re <id>`. `cowork status` lists every open proposal. Advisors never
-   edit files. `cowork prompt <agent> --room <room>` prints the role prompt.
+   edit files, except in a room created with `--advisor-tests`: there they may also create
+   and run test scripts and run commands, but never modify source code. `cowork prompt
+   <agent> --room <room>` prints the role prompt.
 8. A direct instruction from the user overrides the vote loop; the post that acts on it
    says so.
 
@@ -154,16 +156,44 @@ const TIPS_KIMI: &str = r#"Kimi Code specifics
 - If the user has run `cowork hook install --tool kimi`, unread messages are added before each user prompt, and when you end a turn a new message can be handed to you once more in that turn. Nothing else arrives on its own, so keep waiting as above.
 - For multi-line posts use a heredoc: `COWORK_AGENT={agent} cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
 
+const TIPS_DEEPSEEK: &str = r#"DeepSeek Harness specifics
+- DeepSeek Harness can run any model, so its shell cannot tell cowork who you are: prefix every command with `COWORK_AGENT={agent}`, e.g. `COWORK_AGENT={agent} cowork read --room {room}`.
+- It loads CLAUDE.md as well as AGENTS.md. A cowork block in CLAUDE.md speaks to `claude`; you are `{agent}`, so follow AGENTS.md and this prompt.
+- To wait for a reply, start `COWORK_AGENT={agent} cowork wait --room {room} --timeout 600` with the bash tool's `run_in_background: true`, then keep working or end your turn: DeepSeek Harness tells you when the job finishes, waking an idle session, and `job_output` shows what it printed. To keep waiting inside this turn instead, call `job_output` with `wait: true` and `timeout_ms: 600000`. Exit code 2 means nothing arrived yet: read and wait again.
+- In the foreground the bash tool gives up waiting after 60 seconds (`timeoutMs`, at most 600000) and moves the command to a background job, so use `--timeout 50` there. Without `run_in_background` (the minimal preset, a 300-second shell), loop `--timeout 240` in the foreground.
+- Keep one wait running at a time. Each `cowork wait` or `cowork read` moves your read position, so a second one can take the message the first was waiting for.
+- The default sandbox (`workspace-write`) lets commands write only inside the session's workspace, so work from this repository; elsewhere `cowork post` cannot write `.ai-common/`.
+- cowork installs no hooks for DeepSeek Harness: nothing arrives on its own, so keep a wait running as above.
+- For multi-line posts use a heredoc: `COWORK_AGENT={agent} cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
+
+const TIPS_ARGON: &str = r#"Antigravity CLI specifics
+- cowork recognizes an Antigravity shell by its `ANTIGRAVITY_AGENT` marker. If `cowork` still says it cannot tell who you are, prefix every command with `COWORK_AGENT={agent}`.
+- `run_command` hands a long command to the background after its `WaitMsBeforeAsync` window, and `manage_task` checks on it. To wait for a reply, run `cowork wait --room {room} --timeout 540`, under a 10-minute command limit, then follow `run_command`'s own guidance for background tasks: end your turn, or wait on the task with `manage_task` `status`, instead of starting more waits. Exit code 2 means nothing arrived yet: read and wait again.
+- Keep one wait running at a time. Each `cowork wait` or `cowork read` moves your read position, so a second one can take the message the first was waiting for.
+- cowork installs no hooks for Antigravity CLI: nothing arrives on its own, so keep a wait running as above.
+- For multi-line posts use a heredoc: `cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
+
+const TIPS_MUSE: &str = r#"Muse Code specifics
+- Hooks are installed in `.muse/hooks.json`. Muse Code loads them once the user trusts this workspace, from its next session: then `cowork hook stop` hands you new messages as your next instruction when you finish a turn, and unread messages are added before each user prompt. Until then, keep a wait running yourself.
+- To keep working while you wait, run `cowork wait --room {room} --timeout 600` as a background command and end your turn instead of polling: Muse Code wakes an idle session when a background command finishes. In the foreground, loop `cowork wait --room {room} --timeout 120`; exit code 2 means nothing arrived yet, so read and wait again.
+- cowork recognizes Muse Code's shell by `MUSE_SESSION_ID`. If `cowork` says it cannot tell who you are, prefix every command with `COWORK_AGENT={agent}`.
+- The sandbox lets commands write only inside the workspace, so run Muse Code from the repository root, not a subdirectory or a worktree (`muse -w`); elsewhere `cowork post` cannot write `.ai-common/`.
+- For multi-line posts use a heredoc: `cowork post --room {room} --thoughts-file - <<'EOF' ... EOF`."#;
+
 const TIPS_GENERIC: &str = r#"Tool specifics
 - Loop with `cowork wait --room {room} --timeout 120`; exit code 2 means nothing arrived yet, so read and wait again.
 - If `cowork` says it cannot tell who you are, prefix every command with `COWORK_AGENT={agent}`.
 - For multi-line posts use `cowork post --room {room} --thoughts-file -` and pipe the text on stdin."#;
 
+/// The tips for the tool an agent works in; `dsh-<model>` agents get DeepSeek Harness's.
 pub fn tool_tips(agent: &str) -> &'static str {
-    match agent.to_ascii_lowercase().as_str() {
-        "claude" => TIPS_CLAUDE,
-        "codex" => TIPS_CODEX,
-        "kimi" => TIPS_KIMI,
+    match crate::agent::known_tool(agent) {
+        Some("claude") => TIPS_CLAUDE,
+        Some("codex") => TIPS_CODEX,
+        Some("kimi") => TIPS_KIMI,
+        Some("deepseek") => TIPS_DEEPSEEK,
+        Some("argon") => TIPS_ARGON,
+        Some("muse") => TIPS_MUSE,
         _ => TIPS_GENERIC,
     }
 }
@@ -199,7 +229,20 @@ fn fill(root: &Path, tpl: &str, agent: &str, other: &str, project: &str) -> Stri
 pub struct Team<'a> {
     pub executor: &'a str,
     pub advisors: &'a [String],
+    /// The advisors may also create and run test scripts and run commands.
+    pub advisor_tests: bool,
 }
+
+const DUTIES: &str = "You read, suggest, and vote. You never change files in this repository; `{other}` makes every change.";
+const DUTIES_TESTS: &str = "You read, suggest, vote, and test: you may create and run test scripts and run commands to check `{other}`'s work, but you never modify source code; `{other}` makes every change to it.";
+
+const TESTING: &str = r#"
+
+Testing (this room lets advisors test)
+- Check finished work: test after `{other}` reports a change with --taken or --complete. Run the project's builds, tests, and linters, the program itself, and test scripts you write.
+- Create only new files: tests meant to stay go where the project keeps its tests, one-off scripts in a temporary directory outside the repository. Never modify source code or any file you did not create, and never commit.
+- Run only commands that check the work: no git commit, checkout, reset, or stash, no dependency installs or upgrades, no migrations or deploys.
+- In --taken, list each file you added and each command you ran with its result, instead of `None`. When a test fails, give the command and its output in your review or reject; `{other}` fixes the source."#;
 
 /// "`a`", "`a` and `b`", "`a`, `b` and `c`" (with `or` in place of `and` when asked).
 fn names(list: &[&str], conj: &str) -> String {
@@ -225,10 +268,16 @@ pub fn role_prompt(root: &Path, role: &str, agent: &str, team: &Team, project: &
         (EXECUTOR, advisors.join(", "), note)
     } else {
         let peers: Vec<&str> = advisors.iter().copied().filter(|a| !a.eq_ignore_ascii_case(agent)).collect();
+        let does = match (peers.len() > 1, team.advisor_tests) {
+            (false, false) => "it also reviews and votes, and never edits files",
+            (true, false) => "they also review and vote, and never edit files",
+            (false, true) => "it also reviews, votes, and tests, and never modifies source code",
+            (true, true) => "they also review, vote, and test, and never modify source code",
+        };
         let note = match peers.len() {
             0 => String::new(),
-            1 => format!(" {} is a fellow advisor: it also reviews and votes, and never edits files. One approve from any advisor approves a proposal; any reject blocks it.", names(&peers, "and")),
-            _ => format!(" {} are fellow advisors: they also review and vote, and never edit files. One approve from any advisor approves a proposal; any reject blocks it.", names(&peers, "and")),
+            1 => format!(" {} is a fellow advisor: {does}. One approve from any advisor approves a proposal; any reject blocks it.", names(&peers, "and")),
+            _ => format!(" {} are fellow advisors: {does}. One approve from any advisor approves a proposal; any reject blocks it.", names(&peers, "and")),
         };
         (ADVISOR, team.executor.to_string(), note)
     };
@@ -237,8 +286,21 @@ pub fn role_prompt(root: &Path, role: &str, agent: &str, team: &Team, project: &
     } else {
         format!("{} (the advisor)", names(&advisors, "and"))
     };
+    // Only rooms created with advisor tests change the role text; others read as before.
+    let (duties, testing, sole_editor) = if team.advisor_tests {
+        let sole = format!(
+            "You are the only one who changes source code in this repository. {} may also create and run test scripts and run commands to check your work; any file an advisor adds is listed in its --taken, and you decide whether to keep it.",
+            names(&advisors, "and")
+        );
+        (DUTIES_TESTS, TESTING, sole)
+    } else {
+        (DUTIES, "", "You are the only one who edits files in this repository.".to_string())
+    };
     let tpl = override_tpl(root, &format!("{role}.md")).unwrap_or_else(|| builtin.to_string());
     let tpl = tpl
+        .replace("{duties}", duties)
+        .replace("{testing}", testing)
+        .replace("{sole_editor}", &sole_editor)
         .replace("{tool_tips}", tool_tips(agent))
         .replace("{room}", room)
         .replace("{team_note}", &team_note)

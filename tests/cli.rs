@@ -52,6 +52,13 @@ impl Project {
             .env_remove("ROOM_ID")
             .env_remove("COWORK_ROOM")
             .env_remove("ROOM_AGENT");
+        // Markers of whichever agent runs the suite must not decide who a test is.
+        for (k, _) in std::env::vars_os() {
+            let k = k.to_string_lossy().to_string();
+            if k.starts_with("CODEX_") || k.starts_with("MUSE_") || k == "ANTIGRAVITY_AGENT" || k == "DSH_SHELL" {
+                c.env_remove(&k);
+            }
+        }
         c
     }
 
@@ -1341,6 +1348,152 @@ fn new_agents_sets_this_rooms_roster_only() {
     // The project's own list and main are untouched.
     assert!(!p.ok("claude", &["config", "get", "agents"]).contains("kimi"));
     assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex\n"));
+}
+
+#[test]
+fn deepseek_and_dsh_model_agents_get_deepseek_harness_instructions() {
+    let p = Project::with_agents("dsh", Some("claude,deepseek"));
+    let kickoff = p.ok("claude", &["prompt", "deepseek"]);
+    assert!(kickoff.contains("DeepSeek Harness specifics") && kickoff.contains("COWORK_AGENT=deepseek cowork read --room main"), "{kickoff}");
+    let rules = fs::read_to_string(p.root.join("AGENTS.md")).unwrap();
+    assert!(rules.contains("You are `deepseek`") && rules.contains("DeepSeek Harness specifics"), "{rules}");
+    // Any model run in DeepSeek Harness is `dsh-<model>`: the harness's instructions, its own name.
+    let out = p.ok("claude", &["new", "mix", "--agents", "claude,dsh-qwen,deepseek", "--executor", "claude", "--no-agent-files"]);
+    for a in ["dsh-qwen", "deepseek"] {
+        assert!(out.contains(&format!("{a}: cowork has no hooks for DeepSeek Harness")), "{out}");
+    }
+    let qwen = p.ok("claude", &["prompt", "dsh-qwen", "--room", "mix"]);
+    for phrase in [
+        "DeepSeek Harness specifics",
+        "COWORK_AGENT=dsh-qwen cowork wait --room mix --timeout 600",
+        "`run_in_background: true`",
+        "`job_output` with `wait: true` and `timeout_ms: 600000`",
+        "use `--timeout 50` there",
+        "A cowork block in CLAUDE.md speaks to `claude`; you are `dsh-qwen`",
+        "`deepseek` is a fellow advisor",
+    ] {
+        assert!(qwen.contains(phrase), "dsh-qwen lacks `{phrase}`:\n{qwen}");
+    }
+    p.ok("dsh-qwen", &["post", "--room", "mix", "--thoughts", "qwen here"]);
+    assert!(p.ok("claude", &["read", "--room", "mix", "--last", "1"]).contains("### [dsh-qwen] - "));
+    let hook = p.run("claude", &["hook", "install", "--tool", "dsh-qwen"], None);
+    assert!(!hook.status.success() && String::from_utf8_lossy(&hook.stderr).contains("cowork has no hooks for DeepSeek Harness"));
+    // A DeepSeek Harness shell without COWORK_AGENT is told what to set, and nothing is posted.
+    let out = Command::new(env!("CARGO_BIN_EXE_cowork"))
+        .current_dir(&p.root)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("XDG_DATA_HOME", p.root.join("xdg-data"))
+        .env("XDG_RUNTIME_DIR", p.root.join("xdg-run"))
+        .env("DSH_SHELL", "1")
+        .args(["post", "--room", "mix", "--thoughts", "who am i"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("DeepSeek Harness shell") && err.contains("dsh-<model>"), "{err}");
+    assert_eq!(fs::read_to_string(p.root.join(".ai-common/rooms/mix.md")).unwrap().matches("### [").count(), 1);
+}
+
+#[test]
+fn muse_gets_project_hooks_in_claude_codes_format() {
+    let p = Project::with_agents("muse", Some("claude,muse"));
+    let path = p.root.join(".muse/hooks.json");
+    let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).expect("init installs muse's hooks")).unwrap();
+    for (event, cmd) in [("Stop", "stop"), ("UserPromptSubmit", "prompt"), ("SessionStart", "session")] {
+        let entry = &v["hooks"][event][0]["hooks"][0];
+        assert_eq!(entry["command"], format!("cowork hook {cmd} --agent muse"), "{event}: {v}");
+        assert_eq!(entry["type"], "command");
+    }
+    assert!(p.ok("claude", &["hook", "status"]).lines().any(|l| l.starts_with("muse") && l.contains(" installed ") && l.contains(".muse/hooks.json")));
+    assert!(p.ok("claude", &["doctor"]).contains("room hooks for muse installed in .muse/hooks.json"));
+    // The hooks speak Claude Code's JSON, which Muse Code reads: a block on Stop, context on prompts.
+    p.post("claude", "hello muse");
+    let cwd = format!("{{\"cwd\": {:?}, \"session_id\": \"s1\"}}", p.root.to_string_lossy());
+    let stop = p.run("muse", &["hook", "stop", "--agent", "muse", "--timeout", "1"], Some(&cwd));
+    let out: serde_json::Value = serde_json::from_slice(&stop.stdout).unwrap();
+    assert_eq!(out["decision"], "block");
+    assert!(out["reason"].as_str().unwrap().contains("hello muse"), "{out}");
+    p.post("claude", "second note");
+    let prompt: serde_json::Value = serde_json::from_slice(&p.run("muse", &["hook", "prompt", "--agent", "muse"], Some(&cwd)).stdout).unwrap();
+    assert_eq!(prompt["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+    assert!(prompt["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("second note"));
+    let muse = p.ok("claude", &["prompt", "muse"]);
+    assert!(muse.contains("Muse Code specifics") && muse.contains("`MUSE_SESSION_ID`"), "{muse}");
+    // A Muse Code shell is recognized by its marker, without COWORK_AGENT.
+    let mut c = p.cmd("unused");
+    c.env_remove("COWORK_AGENT").env("MUSE_SESSION_ID", "abc").args(["post", "--thoughts", "posted from a muse shell"]);
+    assert!(c.output().unwrap().status.success());
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("### [muse] - "));
+    // `all` covers muse with the other project tools, and remove takes its entries back out.
+    p.ok("claude", &["hook", "remove"]);
+    assert!(!path.exists(), "a file that held only cowork's hooks is removed");
+    p.ok("claude", &["hook", "install", "--tool", "all"]);
+    assert!(path.exists());
+}
+
+#[test]
+fn argon_runs_in_antigravity_cli_without_hooks() {
+    let p = Project::with_agents("argon", Some("claude,argon"));
+    assert!(!p.root.join(".agents").exists() && !p.root.join(".gemini").exists(), "cowork writes no Antigravity config");
+    let argon = p.ok("claude", &["prompt", "argon"]);
+    for phrase in ["Antigravity CLI specifics", "`ANTIGRAVITY_AGENT`", "`manage_task`", "cowork wait --room main --timeout 540", "cowork installs no hooks for Antigravity CLI"] {
+        assert!(argon.contains(phrase), "argon lacks `{phrase}`:\n{argon}");
+    }
+    assert!(fs::read_to_string(p.root.join("AGENTS.md")).unwrap().contains("You are `argon`"), "Antigravity reads AGENTS.md");
+    let out = p.ok("claude", &["new", "pair", "--agents", "argon,muse", "--no-agent-files"]);
+    assert!(out.contains("argon: cowork has no hooks for Google Antigravity CLI"), "{out}");
+    assert!(out.contains("room hooks for muse are not installed; run `cowork hook install --tool muse`"), "{out}");
+    let mut c = p.cmd("unused");
+    c.env_remove("COWORK_AGENT").env("ANTIGRAVITY_AGENT", "1").args(["post", "--thoughts", "posted from agy"]);
+    assert!(c.output().unwrap().status.success());
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("### [argon] - "));
+}
+
+#[test]
+fn advisor_tests_let_advisors_create_and_run_tests_but_never_change_source() {
+    let p = Project::with_agents("advisor-tests", Some("claude,codex,kimi"));
+    let out = p.ok("claude", &["new", "qa", "--executor", "claude", "--advisor-tests"]);
+    assert!(out.contains("(executor: claude; advisors may also create and run tests)"), "{out}");
+    assert!(out.contains("advisor prompt for codex: reads, suggests, votes, and tests"), "{out}");
+    let path = p.root.join(".ai-common/rooms/qa.md");
+    assert!(fs::read_to_string(&path).unwrap().contains("executor: claude\nadvisor_tests: yes\n"));
+    for (me, peer) in [("codex", "kimi"), ("kimi", "codex")] {
+        let ad = p.ok("claude", &["prompt", me, "--room", "qa"]);
+        for phrase in [
+            "you may create and run test scripts and run commands to check `claude`'s work, but you never modify source code",
+            "Testing (this room lets advisors test)",
+            "Never modify source code or any file you did not create, and never commit.",
+            "no git commit, checkout, reset, or stash",
+            "each command you ran with its result",
+        ] {
+            assert!(ad.contains(phrase), "{me} lacks `{phrase}`:\n{ad}");
+        }
+        assert!(ad.contains(&format!("`{peer}` is a fellow advisor: it also reviews, votes, and tests, and never modifies source code.")), "{ad}");
+        assert!(!ad.contains("You never change files in this repository"), "{ad}");
+    }
+    let ex = p.ok("claude", &["prompt", "claude", "--room", "qa"]);
+    assert!(ex.contains("You are the only one who changes source code in this repository. `codex` and `kimi` may also create and run test scripts"), "{ex}");
+    assert!(p.ok("claude", &["status", "--room", "qa"]).contains("executor: claude  advisors: review and test  policy:"));
+    assert_eq!(room_status_json(&p, "qa")["advisor_tests"], true);
+    let cwd = format!("{{\"cwd\": {:?}}}", p.root.to_string_lossy());
+    let session = String::from_utf8_lossy(&p.run("codex", &["hook", "session", "--agent", "codex"], Some(&cwd)).stdout).to_string();
+    assert!(session.contains("review, vote, and create and run tests (never modify source code)"), "{session}");
+    // Archiving rewrites the front matter and keeps the setting.
+    for i in 0..3 {
+        p.ok("claude", &["post", "--room", "qa", "--thoughts", &format!("note {i}")]);
+    }
+    p.ok("claude", &["archive", "--room", "qa", "--keep", "1"]);
+    assert!(fs::read_to_string(&path).unwrap().contains("advisor_tests: yes\n"));
+    assert!(p.ok("claude", &["prompt", "codex", "--room", "qa"]).contains("Testing (this room lets advisors test)"));
+    // Without the flag a room reads exactly as before.
+    p.ok("claude", &["new", "plain", "--executor", "claude"]);
+    assert!(!fs::read_to_string(p.root.join(".ai-common/rooms/plain.md")).unwrap().contains("advisor_tests"));
+    let ad = p.ok("claude", &["prompt", "codex", "--room", "plain"]);
+    assert!(ad.contains("You read, suggest, and vote. You never change files in this repository; `claude` makes every change."), "{ad}");
+    assert!(ad.contains("it also reviews and votes, and never edits files.") && !ad.contains("Testing ("), "{ad}");
+    assert!(p.ok("claude", &["prompt", "claude", "--room", "plain"]).contains("You are the only one who edits files in this repository."));
+    assert!(!p.ok("claude", &["status", "--room", "plain"]).contains("advisors:"));
+    assert_eq!(room_status_json(&p, "plain")["advisor_tests"], false);
 }
 
 #[test]

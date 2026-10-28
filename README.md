@@ -4,7 +4,8 @@
 
 ![Linux and WSL](https://img.shields.io/badge/platform-Linux%20%7C%20WSL-blue) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-`cowork` gives two or three coding agents (Claude Code, Codex, Kimi Code, others) and the person running
+`cowork` gives two or three coding agents (Claude Code, Codex, Kimi Code, DeepSeek Harness, Antigravity
+CLI, Muse Code, others) and the person running
 them a shared, append-only Markdown log inside the repository. Every write takes a file lock,
 every message has an id, plans are proposals that need a vote, and `cowork status` shows what
 is open and who is holding it up. No remote service is required: the log is a file in the
@@ -47,14 +48,15 @@ cowork init
 ```
 
 `cowork init` creates `.ai-common/` with a `main` room, offers to write a rules block into `CLAUDE.md`
-and `AGENTS.md`, installs editor hooks for Claude Code and Codex, and prints one kickoff prompt
+and `AGENTS.md`, installs editor hooks for Claude Code, Codex, and Muse Code, and prints one kickoff prompt
 per agent. Open Claude Code in one terminal and Codex in another, paste each prompt, and they
 coordinate on their own. Codex asks you once to trust the hooks (`/hooks` inside Codex).
 `cowork doctor` then confirms the setup; before `cowork init` it reports that no project is
 set up, which is expected.
 
 The agents default to `claude,codex`; `cowork init --agents claude,codex,kimi` picks a different set
-of two or three. On a terminal, a bare `cowork` in a repository that is not set up yet offers the same
+of two or three. Known names are `claude`, `codex`, `kimi`, `deepseek`, `argon`, and `muse`, plus
+`dsh-<model>` for any other model run in DeepSeek Harness (see below). On a terminal, a bare `cowork` in a repository that is not set up yet offers the same
 choice as a checklist before running setup. That list becomes `main`'s members and the default
 for new rooms.
 
@@ -80,15 +82,26 @@ edits files; the advisors review and vote:
 ```sh
 cowork new landing --purpose "Fix the responsive nav" --executor claude
 cowork new review --agents claude,codex,kimi --executor kimi   # this room's own two or three agents
+cowork new qa --executor claude --advisor-tests                 # the advisors may also run tests
 ```
 
 A room holds two or three agents: one executor, and one or two advisors. With two advisors, one
 approve is enough and any reject blocks. On a terminal, a bare `cowork` opens a menu: *Create a
-room* asks which AIs take part and which one executes, and *Choose AIs for new rooms* changes the
-default. A room keeps the members it was created with; changing the default never changes an
-existing room, `main` included, because votes are counted against the room's own list. An agent
-picked for one room only may still need its hooks: `cowork new` and the menu say which command
-to run.
+room* asks which AIs take part, which one executes, and whether the advisors may also test, and
+*Choose AIs for new rooms* changes the default. A room keeps the members it was created with;
+changing the default never changes an existing room, `main` included, because votes are counted
+against the room's own list. An agent picked for one room only may still need its hooks:
+`cowork new` and the menu say which command to run.
+
+In a room created with `--advisor-tests` (the menu's step after the executor), the advisors may
+also create test scripts and run them, and run commands that check the executor's work: builds,
+the test suite, linters, the program itself. They still never modify source code or any file
+they did not create, never commit, and run nothing that changes the repository or the outside
+world (no checkout, reset, installs, migrations, or deploys). Tests meant to stay go where the
+project keeps its tests and one-off scripts outside the repository; each advisor lists the files
+it added and the commands it ran, with results, in `--taken`, and the executor decides what to
+keep. `cowork status` shows `advisors: review and test` for such a room. Without the flag,
+advisors only review and vote, as before.
 
 A complete round in that room, from a plain shell with explicit identities (agents get theirs
 from their own environment and omit `COWORK_AGENT=`):
@@ -161,8 +174,8 @@ nobody, human or agent, can say what is still waiting for a decision.
 
 Roles are instructions, not enforcement: the executor's prompt tells it to propose before
 editing and to be the only one that changes files; the advisor's prompt tells it to review
-against the code and vote. The tool records and shows what happened; it cannot stop an agent
-from running an editor. A direct instruction from you overrides the vote loop, and the
+against the code and vote, and with `--advisor-tests` to test without touching source code. The
+tool records and shows what happened; it cannot stop an agent from running an editor. A direct instruction from you overrides the vote loop, and the
 prompts say so.
 
 ![How a message reaches a turn-based agent: background wait, Stop hook, UserPromptSubmit hook, SessionStart hook](docs/img/delivery.svg)
@@ -192,12 +205,46 @@ Kimi Code (`kimi`) joins like the others, with three differences its prompts alr
   byte-for-byte as it was; a file it cannot edit safely is left unchanged with an error.
   `--tool all`, `cowork init`, and the menu never touch it.
 
+## DeepSeek Harness, Antigravity CLI, and Muse Code
+
+Each has its own section in the prompts. What differs:
+
+- **DeepSeek Harness** (`deepseek`). DeepSeek Harness can drive models from any provider, so an
+  agent running another model in it is named `dsh-<model>`, such as `dsh-qwen` or `dsh-glm`: it
+  gets the same DeepSeek Harness instructions under its own name. The menu's AI checklist has an
+  entry for this that asks for the model. Because one harness runs many models, its shell marker
+  (`DSH_SHELL`) never names the agent: every command runs as `COWORK_AGENT=<name> cowork ...`, and
+  a dsh shell without it gets an error saying so. The agent waits with `cowork wait` as a
+  background job (`run_in_background: true`); DeepSeek Harness reports when the job ends and
+  wakes an idle session. Its foreground bash gives up waiting after 60 seconds, so foreground
+  waits use `--timeout 50`. Its default sandbox writes only inside the session's workspace, so
+  run it from the repository. It loads `CLAUDE.md` as well as `AGENTS.md`; the prompts say which
+  block is the agent's. cowork installs no hooks for it.
+- **Antigravity CLI** (`argon`, for Gemini 4 Argon in `agy`). Argon is the model; Antigravity CLI
+  is the tool that runs it. cowork recognizes its shell by `ANTIGRAVITY_AGENT`, a variable the
+  binary sets but Google does not document; if it is missing, the agent falls back to
+  `COWORK_AGENT=argon`. `run_command` moves a long command to the background after a few seconds,
+  so the agent starts `cowork wait --timeout 540` and ends its turn or checks the task with
+  `manage_task`. Antigravity reads `AGENTS.md` and `GEMINI.md`, not `CLAUDE.md`. Its hooks
+  (`.agents/hooks.json`) use a protocol of their own, which cowork does not install, so nothing
+  arrives on its own. Default mode asks before every shell command; adding
+  `"permissions": {"allow": ["command(cowork)"]}` to `~/.gemini/antigravity-cli/settings.json`
+  allows commands that start with `cowork`.
+- **Muse Code** (`muse`, from Meta). Muse Code reads Claude Code's hook format from
+  `.muse/hooks.json`, so cowork installs project hooks there like Codex's: `cowork init`,
+  `cowork hook install` (or `--tool muse` / `--tool all`), and `cowork hook remove` handle it.
+  Muse Code loads them only after you trust the workspace, from its next session. cowork
+  recognizes its shell by `MUSE_SESSION_ID`. Its sandbox writes only inside the workspace and
+  keeps `.muse/` read-only, so start it at the repository root rather than in a subdirectory or a
+  worktree. These hooks follow Muse Code's published hook reference and the tests check that
+  format; they have not yet run inside Muse Code itself.
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
 | `cowork init` | set up `.ai-common/`, rules blocks, hooks, and kickoff prompts |
-| `cowork new <name> --purpose "..." --executor <agent> [--agents a,b[,c]]` | create a room and print its role prompts |
+| `cowork new <name> --purpose "..." --executor <agent> [--agents a,b[,c]] [--advisor-tests]` | create a room and print its role prompts; `--advisor-tests` lets the advisors also create and run tests |
 | `cowork read` | unread messages for the calling agent; `--last N`, `--brief`, `--json` |
 | `cowork post` | append a message: `--thoughts`, `--action`, `--taken`, `--handoff`, `--propose`, `--re <id>`, `--vote`, `--complete` |
 | `cowork wait --timeout 300` | block until someone else posts (exit 2 on timeout) |
@@ -205,7 +252,7 @@ Kimi Code (`kimi`) joins like the others, with three differences its prompts alr
 | `cowork stream` | follow a room live |
 | `cowork prompt <agent> [--room <name>]` | reprint a kickoff or role prompt |
 | `cowork archive --keep 20` | move older messages out, keeping open proposals |
-| `cowork hook install\|remove [--tool claude\|codex\|kimi\|all]` | manage the editor hooks (`all` is the project's claude and codex hooks; kimi's are global and installed only by name) |
+| `cowork hook install\|remove [--tool claude\|codex\|muse\|kimi\|all]` | manage the editor hooks (`all` is the project's claude, codex, and muse hooks; kimi's are global and installed only by name) |
 | `cowork hook status` | show which hook files carry cowork's hooks |
 | `cowork feedback bug\|advice "..."` | send a bug report or suggestion |
 | `cowork doctor` | check PATH, project, identity, hooks, daemon, feedback endpoint |

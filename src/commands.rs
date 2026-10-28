@@ -69,6 +69,7 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
             purpose: "General coordination".into(),
             participants: participants.clone(),
             executor: String::new(),
+            advisor_tests: false,
             last_id: 0,
         };
         fs::write(&main, fm.render())?;
@@ -86,10 +87,10 @@ pub fn init(agents: Option<String>, no_git: bool, quiet: bool, agent_files: Opti
     gitignore_add(&root, ".ai-common/.cursors/")?;
     registry::register(&project.name, &root)?;
 
-    // Editor hooks so both tools receive room messages without polling.
+    // Project-level editor hooks so these tools receive room messages without polling.
     let mut hooked: Vec<String> = Vec::new();
     for a in &participants {
-        if a == "claude" || a == "codex" {
+        if crate::hooks::is_project_tool(a) {
             crate::hooks::install_for(&root, a, a)?;
             hooked.push(a.clone());
         }
@@ -644,6 +645,7 @@ pub fn new_room(
     purpose: Option<String>,
     executor: Option<String>,
     agents: Option<Vec<String>>,
+    advisor_tests: bool,
     agent_files: Option<bool>,
 ) -> Result<()> {
     let project = paths::current_project()?;
@@ -691,10 +693,12 @@ pub fn new_room(
         purpose: purpose.unwrap_or_default(),
         participants: participants.clone(),
         executor: executor.clone(),
+        advisor_tests,
         last_id: 0,
     };
     fs::write(&path, fm.render())?;
-    println!("created room {}/{} (executor: {executor})", project.name, name);
+    let tests = if advisor_tests { "; advisors may also create and run tests" } else { "" };
+    println!("created room {}/{} (executor: {executor}{tests})", project.name, name);
     for h in crate::hooks::setup_hints(&project.root, &participants) {
         println!("  {h}");
     }
@@ -802,7 +806,8 @@ pub fn room_prompts(project: &Project, name: &str) -> Result<Vec<(String, String
         participants.push(executor.clone());
     }
     let advisors: Vec<String> = participants.iter().filter(|a| **a != executor).cloned().collect();
-    let team = templates::Team { executor: &executor, advisors: &advisors };
+    let advisor_tests = rf.front.as_ref().map(|f| f.advisor_tests).unwrap_or(false);
+    let team = templates::Team { executor: &executor, advisors: &advisors, advisor_tests };
     let mut out = Vec::new();
     for a in &participants {
         let role = if a == &executor { "executor" } else { "advisor" };
@@ -815,10 +820,20 @@ pub fn room_prompts(project: &Project, name: &str) -> Result<Vec<(String, String
 /// Render the role prompts for printing and save them under .ai-common/prompts/.
 pub fn room_prompts_text(project: &Project, name: &str) -> Result<String> {
     let prompts = room_prompts(project, name)?;
+    let tests = room::parse(&room::read_locked(&paths::room_path(&project.root, name))?)
+        .front
+        .map(|f| f.advisor_tests)
+        .unwrap_or(false);
     let mut printed = String::new();
     let mut saved = format!("# Role prompts for `{}/{}`\n\nPaste each prompt into that agent's session.\n\n", project.name, name);
     for (a, role, text) in &prompts {
-        let what = if role == "executor" { "reads, suggests, votes, and executes (writes changes)" } else { "reads, suggests, and votes (no file changes)" };
+        let what = if role == "executor" {
+            "reads, suggests, votes, and executes (writes changes)"
+        } else if tests {
+            "reads, suggests, votes, and tests (creates and runs test scripts, no source changes)"
+        } else {
+            "reads, suggests, and votes (no file changes)"
+        };
         printed.push_str(&format!("── {role} prompt for {a}: {what} ──\n{text}\n\n"));
         saved.push_str(&format!("## {a} ({role})\n\n```\n{text}\n```\n\n"));
     }
@@ -989,6 +1004,7 @@ fn room_status(project: &Project, name: &str) -> Result<serde_json::Value> {
         "room": name,
         "messages": rf.messages.len(),
         "executor": analysis.executor,
+        "advisor_tests": rf.front.as_ref().map(|f| f.advisor_tests).unwrap_or(false),
         "policy": analysis.policy,
         "proposals": analysis.proposals,
         "informational_votes": analysis.informational_votes,
@@ -1021,8 +1037,9 @@ fn print_proposal_line(p: &serde_json::Value) {
 }
 
 fn print_status(s: &serde_json::Value) {
+    let tests = if s["advisor_tests"].as_bool().unwrap_or(false) { "  advisors: review and test" } else { "" };
     println!(
-        "{}/{}  ({} messages)  executor: {}  policy: {}",
+        "{}/{}  ({} messages)  executor: {}{tests}  policy: {}",
         s["project"].as_str().unwrap_or(""),
         s["room"].as_str().unwrap_or(""),
         s["messages"],
@@ -1410,7 +1427,7 @@ pub fn doctor() -> Result<()> {
                     line(has, true, if has { format!("rules block for {a} present in {}", templates::rules_file(&a)) } else { format!("optional rules block for {a} absent from {}; using .ai-common/PROTOCOL.md (add with `cowork init --agent-files`)", templates::rules_file(&a)) });
                 }
                 let everyone = everyone(&p.root, &agent::participants(&cfg)).unwrap_or_default();
-                for t in ["claude", "codex"] {
+                for t in crate::hooks::PROJECT_TOOLS.iter().copied() {
                     if everyone.iter().any(|a| a == t) {
                         let has = crate::hooks::installed(&p.root, t);
                         let f = crate::hooks::hook_file(&p.root, t);

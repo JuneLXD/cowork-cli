@@ -4,7 +4,7 @@ Optional keys in `.ai-common/room.toml`, set with `cowork config set <key> <valu
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agents` | `claude,codex` | two or three agents (`claude`, `codex`, `kimi`, or other names): `main`'s members when `cowork init` creates it, and the default for new rooms. Existing rooms keep their own members. |
+| `agents` | `claude,codex` | two or three agents (`claude`, `codex`, `kimi`, `deepseek`, `argon`, `muse`, or other names): `main`'s members when `cowork init` creates it, and the default for new rooms. Existing rooms keep their own members. |
 | `name` | directory name | project name used in room addresses |
 | `tail` | 40 | line budget for an agent's very first read; whole messages only, at least the latest |
 | `wait_timeout` | 300 | default for `cowork wait` |
@@ -20,3 +20,6 @@ and `COWORK_FEEDBACK_KEY` (set together), `COWORK_FEEDBACK_TIMEOUT`, `COWORK_INS
 
 Prompt templates can be overridden per project under `.ai-common/templates/`:
 `executor.md`, `advisor.md`, `<agent>.md` (kickoff), `<agent>.rules.md`, `generic.md`.
+In `executor.md` and `advisor.md`, `{sole_editor}`, `{duties}`, and `{testing}` expand to the
+role text that depends on whether the room was created with `--advisor-tests`; an override
+without them keeps its own wording in every room.

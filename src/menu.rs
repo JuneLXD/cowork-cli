@@ -116,27 +116,43 @@ impl Ui for Term {
     }
 
     fn multi(&mut self, title: &str, offered: Vec<String>, preselected: &[usize]) -> Result<Option<Vec<String>>> {
-        let valid = |picked: &[ListOption<&String>]| {
-            let list: Vec<String> = picked.iter().map(|o| o.value.clone()).collect();
+        let valid = |picked: &[ListOption<&Opt>]| {
+            let list: Vec<String> = picked.iter().map(|o| o.value.key.clone()).collect();
             Ok(match agent::validate_roster(&list) {
                 Ok(()) => Validation::Valid,
                 Err(e) => Validation::Invalid(e.to_string().into()),
             })
         };
         let page = offered.len().clamp(4, 14);
-        let r = MultiSelect::new(title, offered)
+        let options: Vec<Opt> = offered
+            .into_iter()
+            .map(|a| {
+                if a == NEW_DSH {
+                    return opt(a.clone(), format!("{a}  (any other model in DeepSeek Harness; you name it next)"));
+                }
+                match agent::describe(&a) {
+                    Some(what) => opt(a.clone(), format!("{a}  ({what})")),
+                    None => opt(a.clone(), a),
+                }
+            })
+            .collect();
+        let r = MultiSelect::new(title, options)
             .with_default(preselected)
             .with_validator(valid)
             .with_help_message("↑↓ move · space toggle · enter confirm · esc back")
             .with_page_size(page)
             .with_vim_mode(false)
             .prompt();
-        cancellable(r)
+        Ok(cancellable(r)?.map(|picked| picked.into_iter().map(|o| o.key).collect()))
     }
 }
 
+/// The picker entry that adds a `dsh-<model>` agent; the model is asked next.
+const NEW_DSH: &str = "dsh-<model>";
+
 /// What an agent picker offers: the known tools, then any other name in
-/// `current`, with `current` preselected.
+/// `current`, with `current` preselected, then the entry for another model in
+/// DeepSeek Harness.
 fn agent_choices(current: &[String]) -> (Vec<String>, Vec<usize>) {
     let mut offered: Vec<String> = agent::KNOWN_AGENTS.iter().map(|a| a.to_string()).collect();
     for a in current {
@@ -145,6 +161,7 @@ fn agent_choices(current: &[String]) -> (Vec<String>, Vec<usize>) {
         }
     }
     let pre = offered.iter().enumerate().filter(|(_, a)| current.contains(a)).map(|(i, _)| i).collect();
+    offered.push(NEW_DSH.to_string());
     (offered, pre)
 }
 
@@ -152,10 +169,44 @@ fn agent_choices(current: &[String]) -> (Vec<String>, Vec<usize>) {
 /// the default executor (the first one) does not change behind the user's back.
 fn choose_agents(ui: &mut dyn Ui, title: &str, current: &[String]) -> Result<Option<Vec<String>>> {
     let (offered, pre) = agent_choices(current);
-    let Some(picked) = ui.multi(title, offered, &pre)? else { return Ok(None) };
+    let Some(mut picked) = ui.multi(title, offered, &pre)? else { return Ok(None) };
+    if let Some(i) = picked.iter().position(|a| a == NEW_DSH) {
+        let Some(name) = name_dsh_agent(ui, &picked)? else { return Ok(None) };
+        picked[i] = name;
+    }
     let mut out: Vec<String> = current.iter().filter(|a| picked.contains(a)).cloned().collect();
     out.extend(picked.into_iter().filter(|a| !current.contains(a)));
     Ok(Some(out))
+}
+
+/// Ask which model the new DeepSeek Harness agent runs; the agent is `dsh-<model>`.
+/// An empty answer backs out, like an empty room name.
+fn name_dsh_agent(ui: &mut dyn Ui, picked: &[String]) -> Result<Option<String>> {
+    loop {
+        let Some(model) = ui.text(
+            "Which model will this DeepSeek Harness agent run?",
+            None,
+            "e.g. qwen or glm; the agent is named dsh-<model> · esc back",
+        )?
+        else {
+            return Ok(None);
+        };
+        let model = model.trim().to_ascii_lowercase();
+        let model = model.strip_prefix(agent::DSH_PREFIX).unwrap_or(&model);
+        if model.is_empty() {
+            return Ok(None);
+        }
+        if !model.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            println!("use only letters, digits, - _ . in the model name");
+            continue;
+        }
+        let name = format!("{}{model}", agent::DSH_PREFIX);
+        if picked.contains(&name) {
+            println!("{name} is already picked");
+            continue;
+        }
+        return Ok(Some(name));
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -164,6 +215,7 @@ struct RoomPlan {
     purpose: Option<String>,
     agents: Vec<String>,
     executor: String,
+    advisor_tests: bool,
 }
 
 fn plan_room(ui: &mut dyn Ui, pool: &[String]) -> Result<Option<RoomPlan>> {
@@ -177,7 +229,23 @@ fn plan_room(ui: &mut dyn Ui, pool: &[String]) -> Result<Option<RoomPlan>> {
     let Some(executor) = ui.select("Which agent executes (writes the changes)? The others advise and vote.", options)? else {
         return Ok(None);
     };
-    Ok(Some(RoomPlan { name, purpose: Some(purpose).filter(|s| !s.is_empty()), agents, executor }))
+    let advisors: Vec<&str> = agents.iter().map(String::as_str).filter(|a| *a != executor).collect();
+    let title = format!(
+        "Let {} also create and run test scripts and run commands? Only {executor} changes source code.",
+        advisors.join(" and ")
+    );
+    let options = vec![
+        opt("review", "No: review and vote only"),
+        opt("tests", "Yes: review, vote, and test (no source code changes)"),
+    ];
+    let Some(mode) = ui.select(&title, options)? else { return Ok(None) };
+    Ok(Some(RoomPlan {
+        name,
+        purpose: Some(purpose).filter(|s| !s.is_empty()),
+        agents,
+        executor,
+        advisor_tests: mode == "tests",
+    }))
 }
 
 fn report(r: Result<()>) {
@@ -231,11 +299,13 @@ fn setup_menu() -> Result<bool> {
         "explain" => {
             println!();
             println!("Setup from this menu will:");
-            println!("  1. ask which AIs work here (claude, codex, kimi; 2 or 3), then create .ai-common/rooms/main.md,");
+            println!("  1. ask which AIs work here (2 or 3 of claude, codex, kimi, deepseek, argon, muse, or");
+            println!("     dsh-<model> for any model in DeepSeek Harness), then create .ai-common/rooms/main.md,");
             println!("     the shared log, plus PROTOCOL.md (kept as is if it exists)");
             println!("  2. ask whether to add cowork rules to CLAUDE.md and AGENTS.md (existing text is preserved)");
-            println!("  3. install editor hooks for the selected claude and codex agents (.claude/settings.json,");
-            println!("     .codex/hooks.json); Kimi Code's hooks are global: `cowork hook install --tool kimi`");
+            println!("  3. install editor hooks for the selected claude, codex, and muse agents (.claude/settings.json,");
+            println!("     .codex/hooks.json, .muse/hooks.json); Kimi Code's hooks are global: `cowork hook install");
+            println!("     --tool kimi`; DeepSeek Harness and Antigravity get no hooks and wait with `cowork wait`");
             println!("  4. add .ai-common/.cursors/ to .gitignore (per-agent read positions)");
             println!("  5. register the project for <project>/<room> addressing");
             println!("  6. print one kickoff prompt per agent to paste into its session");
@@ -296,7 +366,7 @@ fn copy_prompt_offer(project: &Project, room: &str) -> Result<()> {
 fn create_room(p: &Project, parts: &[String]) -> Result<()> {
     let Some(plan) = plan_room(&mut Term, parts)? else { return Ok(()) };
     println!();
-    report(commands::new_room(&plan.name, plan.purpose, Some(plan.executor), Some(plan.agents), None));
+    report(commands::new_room(&plan.name, plan.purpose, Some(plan.executor), Some(plan.agents), plan.advisor_tests, None));
     if paths::room_path(&p.root, &plan.name).exists() {
         copy_prompt_offer(p, &plan.name)?;
     }
@@ -316,7 +386,7 @@ fn choose_default_agents(p: &Project, current: &[String]) -> Result<()> {
     config::set(&p.root, "agents", &picked.join(","))?;
     println!("new rooms now take {} by default", picked.join(", "));
     let added: Vec<String> = picked.iter().filter(|a| !current.contains(a)).cloned().collect();
-    let hooked: Vec<String> = added.iter().filter(|a| *a == "claude" || *a == "codex").cloned().collect();
+    let hooked: Vec<String> = added.iter().filter(|a| crate::hooks::is_project_tool(a)).cloned().collect();
     for t in &hooked {
         let path = crate::hooks::install_for(&p.root, t, t)?;
         println!("installed room hooks for {t} in {}", path.strip_prefix(&p.root).unwrap_or(&path).display());
@@ -520,19 +590,21 @@ mod tests {
         Esc,
     }
 
-    /// Answers prompts from a list and records what each picker offered.
+    /// Answers prompts from a list and records what each picker asked and offered.
     struct Script {
         answers: VecDeque<A>,
         offered: Vec<(Vec<String>, Vec<usize>)>,
         choices: Vec<Vec<String>>,
+        titles: Vec<String>,
     }
 
     fn script(answers: Vec<A>) -> Script {
-        Script { answers: answers.into(), offered: Vec::new(), choices: Vec::new() }
+        Script { answers: answers.into(), offered: Vec::new(), choices: Vec::new(), titles: Vec::new() }
     }
 
     impl Ui for Script {
-        fn select(&mut self, _: &str, options: Vec<Opt>) -> Result<Option<String>> {
+        fn select(&mut self, title: &str, options: Vec<Opt>) -> Result<Option<String>> {
+            self.titles.push(title.to_string());
             self.choices.push(options.into_iter().map(|o| o.key).collect());
             match self.answers.pop_front() {
                 Some(A::Pick(k)) => Ok(Some(k.to_string())),
@@ -565,8 +637,46 @@ mod tests {
 
     #[test]
     fn pickers_offer_the_known_agents_then_custom_names_with_current_preselected() {
-        assert_eq!(agent_choices(&names(&["claude", "codex"])), (names(&["claude", "codex", "kimi"]), vec![0, 1]));
-        assert_eq!(agent_choices(&names(&["gemini", "kimi"])), (names(&["claude", "codex", "kimi", "gemini"]), vec![2, 3]));
+        const KNOWN: &[&str] = &["claude", "codex", "kimi", "deepseek", "argon", "muse", NEW_DSH];
+        assert_eq!(agent_choices(&names(&["claude", "codex"])), (names(KNOWN), vec![0, 1]));
+        assert_eq!(
+            agent_choices(&names(&["gemini", "kimi"])),
+            (names(&["claude", "codex", "kimi", "deepseek", "argon", "muse", "gemini", NEW_DSH]), vec![2, 6])
+        );
+        assert_eq!(agent_choices(&names(&["muse", "argon", "deepseek"])), (names(KNOWN), vec![3, 4, 5]));
+        // A dsh-<model> agent already on the list is offered by name, ahead of the entry for a new one.
+        let (offered, pre) = agent_choices(&names(&["claude", "dsh-qwen"]));
+        assert_eq!(&offered[6..], &names(&["dsh-qwen", NEW_DSH])[..]);
+        assert_eq!(pre, vec![0, 6]);
+    }
+
+    #[test]
+    fn every_known_agent_and_dsh_model_shows_its_tool_in_the_picker() {
+        for a in agent::KNOWN_AGENTS {
+            assert!(agent::tool_name(a).is_some() && agent::describe(a).is_some(), "{a} has no tool name");
+        }
+        assert_eq!(agent::describe("argon").as_deref(), Some("Gemini 4 Argon in Google Antigravity CLI"));
+        assert_eq!(agent::describe("dsh-qwen").as_deref(), Some("qwen in DeepSeek Harness"));
+        assert_eq!(agent::tool_name("dsh-qwen"), Some("DeepSeek Harness"));
+        assert_eq!(agent::known_tool("DSH-GLM"), Some("deepseek"));
+        for other in ["gemini", "dsh-", "dshqwen"] {
+            assert_eq!((agent::known_tool(other), agent::describe(other)), (None, None), "{other}");
+        }
+    }
+
+    #[test]
+    fn another_model_in_deepseek_harness_is_named_dsh_model() {
+        let mut ui = script(vec![A::Multi(&["claude", NEW_DSH]), A::Text("Qwen")]);
+        assert_eq!(choose_agents(&mut ui, "t", &names(&["claude", "codex"])).unwrap(), Some(names(&["claude", "dsh-qwen"])));
+        // A full name is accepted as is; a bad or duplicate name is asked again.
+        let mut ui = script(vec![A::Multi(&["dsh-glm", NEW_DSH]), A::Text("qwen 3"), A::Text("dsh-glm"), A::Text("dsh-qwen3")]);
+        assert_eq!(choose_agents(&mut ui, "t", &names(&["dsh-glm", "claude"])).unwrap(), Some(names(&["dsh-glm", "dsh-qwen3"])));
+        assert!(ui.answers.is_empty());
+        // Esc or an empty name at the model question backs out of the whole choice.
+        for answer in [A::Esc, A::Text("")] {
+            let mut ui = script(vec![A::Multi(&["claude", NEW_DSH]), answer]);
+            assert_eq!(choose_agents(&mut ui, "t", &names(&["claude", "codex"])).unwrap(), None);
+        }
     }
 
     #[test]
@@ -580,8 +690,8 @@ mod tests {
 
     #[test]
     fn esc_at_any_room_creation_prompt_plans_nothing() {
-        let full = || vec![A::Text("r1"), A::Text("why"), A::Multi(&["claude", "codex", "kimi"]), A::Pick("kimi")];
-        for stop in 0..4 {
+        let full = || vec![A::Text("r1"), A::Text("why"), A::Multi(&["claude", "codex", "kimi"]), A::Pick("kimi"), A::Pick("tests")];
+        for stop in 0..5 {
             let mut answers: Vec<A> = full().into_iter().take(stop).collect();
             answers.push(A::Esc);
             let mut ui = script(answers);
@@ -595,13 +705,33 @@ mod tests {
 
     #[test]
     fn a_room_plan_offers_only_the_selected_agents_as_executor() {
-        let mut ui = script(vec![A::Text("r1"), A::Text(""), A::Multi(&["claude", "kimi"]), A::Pick("kimi")]);
+        let mut ui = script(vec![A::Text("r1"), A::Text(""), A::Multi(&["claude", "kimi"]), A::Pick("kimi"), A::Pick("review")]);
         let plan = plan_room(&mut ui, &names(&["claude", "codex"])).unwrap().unwrap();
         assert_eq!(
             plan,
-            RoomPlan { name: "r1".into(), purpose: None, agents: names(&["claude", "kimi"]), executor: "kimi".into() }
+            RoomPlan {
+                name: "r1".into(),
+                purpose: None,
+                agents: names(&["claude", "kimi"]),
+                executor: "kimi".into(),
+                advisor_tests: false,
+            }
         );
-        assert_eq!(ui.offered, vec![(names(&["claude", "codex", "kimi"]), vec![0, 1])]);
-        assert_eq!(ui.choices, vec![names(&["claude", "kimi"])]);
+        let mut offered = names(agent::KNOWN_AGENTS);
+        offered.push(NEW_DSH.to_string());
+        assert_eq!(ui.offered, vec![(offered, vec![0, 1])]);
+        assert_eq!(ui.choices, vec![names(&["claude", "kimi"]), names(&["review", "tests"])]);
+    }
+
+    #[test]
+    fn the_step_after_the_executor_can_let_the_advisors_test() {
+        let mut ui = script(vec![A::Text("r1"), A::Text(""), A::Multi(&["claude", "codex", "kimi"]), A::Pick("claude"), A::Pick("tests")]);
+        let plan = plan_room(&mut ui, &names(&["claude", "codex"])).unwrap().unwrap();
+        assert!(plan.advisor_tests && plan.executor == "claude", "{plan:?}");
+        // The question names only the advisors, after the executor was chosen.
+        let asked = ui.titles.last().unwrap();
+        assert!(asked.contains("Let codex and kimi also create and run test scripts and run commands?"), "{asked}");
+        assert!(asked.contains("Only claude changes source code"), "{asked}");
+        assert_eq!(ui.choices.last().unwrap(), &names(&["review", "tests"]));
     }
 }

@@ -185,6 +185,9 @@ pub struct FrontMatter {
     pub participants: Vec<String>,
     /// The one agent allowed to change files in this room. Empty means unassigned.
     pub executor: String,
+    /// The advisors may also create and run test scripts and run commands; source
+    /// code stays the executor's. Written only when set, so older rooms read as before.
+    pub advisor_tests: bool,
     /// High-water mark of allocated message ids, kept here so `archive` cannot
     /// cause ids to be reused. Ids are contiguous from 1: every id in 1..=last_id
     /// existed at some point, even if it has since been archived.
@@ -202,6 +205,9 @@ impl FrontMatter {
             self.participants.join(", "),
             self.executor
         );
+        if self.advisor_tests {
+            s.push_str("advisor_tests: yes\n");
+        }
         if self.last_id > 0 {
             s.push_str(&format!("last_id: {}\n", self.last_id));
         }
@@ -249,6 +255,7 @@ fn parse_front(lines: &[&str]) -> FrontMatter {
                 "created" => fm.created = v,
                 "purpose" => fm.purpose = v,
                 "executor" => fm.executor = v,
+                "advisor_tests" => fm.advisor_tests = v.eq_ignore_ascii_case("yes") || v.eq_ignore_ascii_case("true"),
                 "last_id" => fm.last_id = v.parse().unwrap_or(0),
                 "participants" => {
                     fm.participants = v

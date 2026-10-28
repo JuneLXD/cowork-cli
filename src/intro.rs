@@ -16,7 +16,7 @@ Start: cowork init [--agents claude,codex,kimi]; paste the prompts.
 Progress: cowork status | Help: cowork --help
 Alpha software: cowork feedback bug "...""#;
 
-/// The banner with the version filled in (the first line reads `cowork 0.2.0 - ...`).
+/// The banner with the version filled in (the first line reads `cowork 0.3.0 - ...`).
 pub fn text() -> String {
     TEXT.replace("{version}", env!("CARGO_PKG_VERSION"))
 }

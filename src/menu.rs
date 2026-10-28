@@ -230,10 +230,11 @@ fn plan_room(ui: &mut dyn Ui, pool: &[String]) -> Result<Option<RoomPlan>> {
         return Ok(None);
     };
     let advisors: Vec<&str> = agents.iter().map(String::as_str).filter(|a| *a != executor).collect();
-    let title = format!(
-        "Let {} also create and run test scripts and run commands? Only {executor} changes source code.",
-        advisors.join(" and ")
-    );
+    let who = match advisors.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => advisors.concat(),
+    };
+    let title = format!("Let {who} also create and run test scripts and run commands? Only {executor} changes source code.");
     let options = vec![
         opt("review", "No: review and vote only"),
         opt("tests", "Yes: review, vote, and test (no source code changes)"),
@@ -299,7 +300,7 @@ fn setup_menu() -> Result<bool> {
         "explain" => {
             println!();
             println!("Setup from this menu will:");
-            println!("  1. ask which AIs work here (2 or 3 of claude, codex, kimi, deepseek, argon, muse, or");
+            println!("  1. ask which AIs work here (two or more of claude, codex, kimi, deepseek, argon, muse, or");
             println!("     dsh-<model> for any model in DeepSeek Harness), then create .ai-common/rooms/main.md,");
             println!("     the shared log, plus PROTOCOL.md (kept as is if it exists)");
             println!("  2. ask whether to add cowork rules to CLAUDE.md and AGENTS.md (existing text is preserved)");
@@ -733,5 +734,12 @@ mod tests {
         assert!(asked.contains("Let codex and kimi also create and run test scripts and run commands?"), "{asked}");
         assert!(asked.contains("Only claude changes source code"), "{asked}");
         assert_eq!(ui.choices.last().unwrap(), &names(&["review", "tests"]));
+        // Any number of agents: the question lists every advisor.
+        let pick: &[&str] = &["claude", "codex", "kimi", "deepseek", "muse"];
+        let mut ui = script(vec![A::Text("r2"), A::Text(""), A::Multi(pick), A::Pick("kimi"), A::Pick("review")]);
+        let plan = plan_room(&mut ui, &names(&["claude", "codex"])).unwrap().unwrap();
+        assert_eq!((plan.agents.len(), plan.advisor_tests), (5, false));
+        let asked = ui.titles.last().unwrap();
+        assert!(asked.starts_with("Let claude, codex, deepseek and muse also create"), "{asked}");
     }
 }

@@ -4,7 +4,7 @@
 
 ![Linux and WSL](https://img.shields.io/badge/platform-Linux%20%7C%20WSL-blue) ![Status: alpha](https://img.shields.io/badge/status-alpha-orange) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-`cowork` gives two or three coding agents (Claude Code, Codex, Kimi Code, DeepSeek Harness, Antigravity
+`cowork` gives two or more coding agents (Claude Code, Codex, Kimi Code, DeepSeek Harness, Antigravity
 CLI, Muse Code, others) and the person running
 them a shared, append-only Markdown log inside the repository. Every write takes a file lock,
 every message has an id, plans are proposals that need a vote, and `cowork status` shows what
@@ -22,8 +22,8 @@ Linux x86_64 or WSL. Pick one route.
 no releases are published yet. With the tarball in hand:
 
 ```sh
-tar xzf cowork-0.2.0-x86_64-linux.tar.gz
-cd cowork-0.2.0-x86_64-linux
+tar xzf cowork-0.3.0-x86_64-linux.tar.gz
+cd cowork-0.3.0-x86_64-linux
 sha256sum -c SHA256SUMS          # optional
 ./install.sh                     # installs into ~/.local/bin; sudo ./install.sh --system for /usr/local/bin
 ```
@@ -55,7 +55,7 @@ coordinate on their own. Codex asks you once to trust the hooks (`/hooks` inside
 set up, which is expected.
 
 The agents default to `claude,codex`; `cowork init --agents claude,codex,kimi` picks a different set
-of two or three. Known names are `claude`, `codex`, `kimi`, `deepseek`, `argon`, and `muse`, plus
+of two or more. Known names are `claude`, `codex`, `kimi`, `deepseek`, `argon`, and `muse`, plus
 `dsh-<model>` for any other model run in DeepSeek Harness (see below). On a terminal, a bare `cowork` in a repository that is not set up yet offers the same
 choice as a checklist before running setup. That list becomes `main`'s members and the default
 for new rooms.
@@ -81,12 +81,13 @@ edits files; the advisors review and vote:
 
 ```sh
 cowork new landing --purpose "Fix the responsive nav" --executor claude
-cowork new review --agents claude,codex,kimi --executor kimi   # this room's own two or three agents
+cowork new review --agents claude,codex,kimi --executor kimi   # this room's own agents
+cowork new crew --agents claude,codex,kimi,dsh-qwen,muse       # any number, two or more
 cowork new qa --executor claude --advisor-tests                 # the advisors may also run tests
 ```
 
-A room holds two or three agents: one executor, and one or two advisors. With two advisors, one
-approve is enough and any reject blocks. On a terminal, a bare `cowork` opens a menu: *Create a
+A room holds two or more agents, with no upper limit: one executor, and one or more advisors.
+With several advisors, one approve is enough and any reject blocks. On a terminal, a bare `cowork` opens a menu: *Create a
 room* asks which AIs take part, which one executes, and whether the advisors may also test, and
 *Choose AIs for new rooms* changes the default. A room keeps the members it was created with;
 changing the default never changes an existing room, `main` included, because votes are counted
@@ -244,7 +245,7 @@ Each has its own section in the prompts. What differs:
 | Command | Purpose |
 |---|---|
 | `cowork init` | set up `.ai-common/`, rules blocks, hooks, and kickoff prompts |
-| `cowork new <name> --purpose "..." --executor <agent> [--agents a,b[,c]] [--advisor-tests]` | create a room and print its role prompts; `--advisor-tests` lets the advisors also create and run tests |
+| `cowork new <name> --purpose "..." --executor <agent> [--agents a,b[,...]] [--advisor-tests]` | create a room and print its role prompts; `--advisor-tests` lets the advisors also create and run tests |
 | `cowork read` | unread messages for the calling agent; `--last N`, `--brief`, `--json` |
 | `cowork post` | append a message: `--thoughts`, `--action`, `--taken`, `--handoff`, `--propose`, `--re <id>`, `--vote`, `--complete` |
 | `cowork wait --timeout 300` | block until someone else posts (exit 2 on timeout) |

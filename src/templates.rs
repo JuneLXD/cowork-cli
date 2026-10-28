@@ -99,7 +99,7 @@ log before working and posts after each unit of work. Nobody edits the log by ha
 4. Wait, do not poll. `cowork wait` blocks until the counterpart posts.
 5. One topic per room. `cowork new <name>` creates a side room. Keep `main` for coordination.
 6. Never edit files under `.ai-common/rooms/` directly. The CLI owns the format.
-7. Every room has two or three agents: one executor and one or two advisors. The executor
+7. Every room has two or more agents: one executor and one or more advisors. The executor
    proposes each change with `--propose`, waits for a vote, and only then edits files.
    Advisors review and vote on the proposal id: `--re <id> --vote "approve: reason"` or
    `"reject: reason"`. A proposal is approved by one approve and blocked by any reject; only

@@ -1497,11 +1497,35 @@ fn advisor_tests_let_advisors_create_and_run_tests_but_never_change_source() {
 }
 
 #[test]
+fn a_room_can_hold_any_number_of_agents() {
+    let p = Project::new("crew");
+    let out = p.ok("claude", &["new", "crew", "--agents", "claude,codex,kimi,dsh-qwen,muse,argon", "--executor", "claude", "--no-agent-files"]);
+    assert!(out.contains("created room") && out.contains("executor: claude"), "{out}");
+    let text = fs::read_to_string(p.root.join(".ai-common/rooms/crew.md")).unwrap();
+    assert!(text.contains("participants: claude, codex, kimi, dsh-qwen, muse, argon\n"), "{text}");
+    let ex = p.ok("claude", &["prompt", "claude", "--room", "crew"]);
+    assert!(ex.contains("working with `codex`, `kimi`, `dsh-qwen`, `muse` and `argon` (the advisors)"), "{ex}");
+    assert!(ex.contains("for `codex`, `kimi`, `dsh-qwen`, `muse` or `argon`'s vote"), "{ex}");
+    let ad = p.ok("claude", &["prompt", "muse", "--room", "crew"]);
+    assert!(ad.contains("`codex`, `kimi`, `dsh-qwen` and `argon` are fellow advisors: they also review and vote"), "{ad}");
+    assert!(ad.contains("working with `claude` (the executor)"), "{ad}");
+    // Every advisor's vote counts: one approve approves, any reject blocks.
+    p.ok("claude", &["post", "--room", "crew", "--propose", "--thoughts", "t", "--action", "x"]);
+    assert_eq!(proposal(&room_status_json(&p, "crew"), 1)["waiting_for"], serde_json::json!(["codex", "kimi", "dsh-qwen", "muse", "argon"]));
+    p.ok("argon", &["post", "--room", "crew", "--re", "1", "--vote", "approve: fine"]);
+    let s = room_status_json(&p, "crew");
+    assert_eq!(proposal(&s, 1)["state"], "approved");
+    assert_eq!(proposal(&s, 1)["waiting_for"], serde_json::json!(["codex", "kimi", "dsh-qwen", "muse"]));
+    p.ok("dsh-qwen", &["post", "--room", "crew", "--re", "1", "--vote", "reject: missing a test"]);
+    assert_eq!(proposal(&room_status_json(&p, "crew"), 1)["state"], "rejected");
+}
+
+#[test]
 fn bad_rosters_are_rejected_before_anything_is_written() {
     let p = Project::new("roster-bad");
     let cases: &[(&[&str], &str)] = &[
-        (&["--agents", "claude"], "2 to 3 agents"),
-        (&["--agents", "claude,codex,kimi,gemini"], "2 to 3 agents"),
+        (&["--agents", "claude"], "at least 2 agents"),
+        (&["--agents", "claude,codex,kimi,claude"], "listed twice"),
         (&["--agents", "claude,Claude"], "listed twice"),
         (&["--agents", "claude,kimi", "--executor", "codex"], "not one of this room's agents"),
         (&["--executor", "kimi"], "not one of this room's agents"),
@@ -1517,9 +1541,9 @@ fn bad_rosters_are_rejected_before_anything_is_written() {
         assert!(!p.root.join(format!(".ai-common/prompts/{name}.md")).exists(), "{args:?} left prompts");
     }
     // An inherited project list is checked the same way.
-    p.ok("claude", &["config", "set", "agents", "claude,codex,kimi,gemini"]);
+    p.ok("claude", &["config", "set", "agents", "claude"]);
     let out = p.run("claude", &["new", "inherited"], None);
-    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("2 to 3 agents"));
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("at least 2 agents"));
     assert!(!p.root.join(".ai-common/rooms/inherited.md").exists());
 }
 
@@ -1589,7 +1613,7 @@ fn kimi_wait_sees_later_posts_skips_its_own_and_keeps_its_own_cursor() {
 
 #[test]
 fn init_checks_the_roster_before_writing_anything() {
-    for list in ["claude", "claude,codex,kimi,gemini", "claude,Claude"] {
+    for list in ["claude", "claude,codex,kimi,Kimi", "claude,Claude"] {
         let p = Project::uninitialized("init-roster");
         let out = p.run("claude", &["init", "--quiet", "--agents", list], None);
         assert!(!out.status.success(), "{list} should fail");
@@ -1599,13 +1623,13 @@ fn init_checks_the_roster_before_writing_anything() {
     // An inherited list is checked when it is about to become main's roster.
     let p = Project::uninitialized("init-inherited");
     fs::create_dir_all(p.root.join(".ai-common")).unwrap();
-    fs::write(p.root.join(".ai-common/room.toml"), "agents = [\"claude\", \"codex\", \"kimi\", \"gemini\"]\n").unwrap();
+    fs::write(p.root.join(".ai-common/room.toml"), "agents = [\"claude\"]\n").unwrap();
     let out = p.run("claude", &["init", "--quiet"], None);
-    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("2 to 3 agents"));
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("at least 2 agents"));
     assert!(!p.root.join(".ai-common/rooms/main.md").exists());
-    // Three is fine.
-    let p = Project::with_agents("init-trio", Some("claude,codex,kimi"));
-    assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex, kimi\n"));
+    // Any number from two up is fine.
+    let p = Project::with_agents("init-five", Some("claude,codex,kimi,deepseek,muse"));
+    assert!(fs::read_to_string(p.room_file()).unwrap().contains("participants: claude, codex, kimi, deepseek, muse\n"));
 }
 
 #[test]

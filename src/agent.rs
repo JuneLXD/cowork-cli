@@ -5,8 +5,9 @@ use std::env;
 pub const DEFAULT_AGENTS: &[&str] = &["claude", "codex"];
 /// The tools cowork has specific support for; the menus offer these first.
 pub const KNOWN_AGENTS: &[&str] = &["claude", "codex", "kimi", "deepseek", "argon", "muse"];
-/// The most agents one room can hold: one executor and up to two advisors.
-pub const MAX_ROOM_AGENTS: usize = 3;
+/// The fewest agents a room can hold: one executor and at least one advisor to vote.
+/// There is no upper limit.
+pub const MIN_ROOM_AGENTS: usize = 2;
 
 /// Detect the calling agent from the environment. Returns (name, source).
 pub fn detect_env() -> Option<(String, &'static str)> {
@@ -103,11 +104,15 @@ pub fn participants(cfg: &Config) -> Vec<String> {
         .unwrap_or_else(|| DEFAULT_AGENTS.iter().map(|s| s.to_string()).collect())
 }
 
-/// A room roster must be 2 to MAX_ROOM_AGENTS distinct, valid names. Checked
+/// A room roster must be at least MIN_ROOM_AGENTS distinct, valid names. Checked
 /// before anything is written, so a bad list never leaves a room behind.
 pub fn validate_roster(list: &[String]) -> Result<()> {
-    if list.len() < 2 || list.len() > MAX_ROOM_AGENTS {
-        bail!("a room needs 2 to {MAX_ROOM_AGENTS} agents, got {} ({})", list.len(), list.join(", "));
+    if list.len() < MIN_ROOM_AGENTS {
+        bail!(
+            "a room needs at least {MIN_ROOM_AGENTS} agents (one executor and at least one advisor), got {} ({})",
+            list.len(),
+            list.join(", ")
+        );
     }
     for (i, a) in list.iter().enumerate() {
         crate::room::validate_agent(a)?;

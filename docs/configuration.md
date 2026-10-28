@@ -4,7 +4,7 @@ Optional keys in `.ai-common/room.toml`, set with `cowork config set <key> <valu
 
 | Key | Default | Meaning |
 |---|---|---|
-| `agents` | `claude,codex` | two or three agents (`claude`, `codex`, `kimi`, `deepseek`, `argon`, `muse`, or other names): `main`'s members when `cowork init` creates it, and the default for new rooms. Existing rooms keep their own members. |
+| `agents` | `claude,codex` | two or more agents (`claude`, `codex`, `kimi`, `deepseek`, `argon`, `muse`, or other names): `main`'s members when `cowork init` creates it, and the default for new rooms. Existing rooms keep their own members. |
 | `name` | directory name | project name used in room addresses |
 | `tail` | 40 | line budget for an agent's very first read; whole messages only, at least the latest |
 | `wait_timeout` | 300 | default for `cowork wait` |

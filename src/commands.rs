@@ -663,7 +663,7 @@ pub fn new_room(
     let participants = agents.unwrap_or_else(|| pool.clone());
     agent::validate_roster(&participants).map_err(|e| {
         if inherited {
-            anyhow!("{e}: the project's agents cannot form a room; choose this room's with --agents a,b[,c]")
+            anyhow!("{e}: the project's agents cannot form a room; choose this room's with --agents a,b[,...]")
         } else {
             e
         }

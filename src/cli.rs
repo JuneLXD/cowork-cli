@@ -17,7 +17,7 @@ pub enum Cmd {
     /// Scaffold .ai-common/, optional rules blocks, and print kickoff prompts
     #[command(after_help = "Without either agent-files flag, a terminal asks; non-interactive init writes agent files.")]
     Init {
-        /// Comma-separated agents, 2 or 3, for main and new rooms (default: claude,codex; known: claude, codex, kimi, deepseek, argon, muse)
+        /// Comma-separated agents, 2 or more, for main and new rooms (default: claude,codex; known: claude, codex, kimi, deepseek, argon, muse)
         #[arg(long)]
         agents: Option<String>,
         /// Initialize even outside a git repository
@@ -45,7 +45,7 @@ pub enum Cmd {
         /// The agent that writes changes in this room (default: first participant)
         #[arg(long, value_name = "AGENT")]
         executor: Option<String>,
-        /// Comma-separated agents in this room, 2 or 3 (default: the project's agents)
+        /// Comma-separated agents in this room, 2 or more (default: the project's agents)
         #[arg(long, value_name = "LIST")]
         agents: Option<String>,
         /// Let the advisors also create and run test scripts and run commands; they still never modify source code
